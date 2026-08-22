@@ -1,0 +1,31 @@
+# LOB Matching Engine — Sample Order Flow
+# Format: id,symbol,side,type,price,qty
+id,symbol,side,type,price,qty
+
+# Scenario 1: Basic limit orders building a book
+1,AAPL,BUY,LIMIT,15000,100
+2,AAPL,BUY,LIMIT,14900,200
+3,AAPL,SELL,LIMIT,15100,150
+4,AAPL,SELL,LIMIT,15200,100
+
+# Scenario 2: Crossing — sell at 15000 hits bid
+5,AAPL,SELL,LIMIT,15000,50
+
+# Scenario 3: Market order eats liquidity
+6,AAPL,BUY,MARKET,0,100
+
+# Scenario 4: IOC — fill what you can, cancel the rest
+7,AAPL,SELL,IOC,14800,500
+
+# Scenario 5: FOK — all or nothing (should reject, not enough qty)
+8,AAPL,BUY,FOK,15200,9999
+
+# Scenario 6: Multi-symbol
+9,TSLA,BUY,LIMIT,25000,50
+10,TSLA,SELL,LIMIT,25000,30
+
+# Scenario 7: Cancel
+CANCEL,2
+
+# Scenario 8: Cancel non-existent
+CANCEL,999
