@@ -1,3 +1,5 @@
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=aariiparekh3012-collab_the-book-was-open&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=aariiparekh3012-collab_the-book-was-open)
+
 # lob-matching-engine
 
 Limit order book matching engine in C++17. Supports limit, market, IOC, and FOK orders across multiple symbols. Price-time priority, integer-only arithmetic, no external dependencies in the core.
