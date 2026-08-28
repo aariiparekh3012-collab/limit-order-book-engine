@@ -1,0 +1,32 @@
+  sonar-analysis:
+    name: SonarCloud C++ analysis
+    runs-on: ubuntu-latest
+
+    env:
+      BUILD_WRAPPER_OUT_DIR: build-wrapper-output
+      SONAR_HOST_URL: https://sonarcloud.io
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Sonar C++ Build Wrapper
+        uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v6
+
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build-sonar \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build through Sonar Build Wrapper
+        run: |
+          build-wrapper-linux-x86-64 \
+            --out-dir "${{ env.BUILD_WRAPPER_OUT_DIR }}" \
+            cmake --build build-sonar --parallel
+
+      - name: Run SonarCloud analysis
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
