@@ -1,3 +1,12 @@
+name: SonarCloud
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
   sonar-analysis:
     name: SonarCloud C++ analysis
     runs-on: ubuntu-latest
