@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        compiler: [gcc, clang]
+        build_type: [Debug, Release]
+        include:
+          - compiler: gcc
+            cc: gcc-12
+            cxx: g++-12
+          - compiler: clang
+            cc: clang-15
+            cxx: clang++-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install compilers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-12 g++-12 clang-15
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_C_COMPILER=${{ matrix.cc }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Benchmark (Release only)
+        if: matrix.build_type == 'Release'
+        run: ./build/bench_submit
