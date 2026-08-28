@@ -4,6 +4,7 @@
 #include "book.h"
 
 #include <unordered_map>
+#include <vector>
 #include <stdexcept>
 
 namespace lob {
@@ -11,8 +12,10 @@ namespace lob {
 // manages one Book per symbol, routes by order.symbol
 class Exchange {
 public:
+    explicit Exchange(STPMode stp = STPMode::None) : stp_mode_(stp) {}
+
     void add_symbol(const Symbol& sym) {
-        books_.emplace(sym, Book{});
+        books_.emplace(sym, Book{stp_mode_});
     }
 
     bool has_symbol(const Symbol& sym) const {
@@ -62,6 +65,7 @@ public:
         return it->second;
     }
 
+    STPMode stp_mode() const { return stp_mode_; }
     size_t symbol_count() const { return books_.size(); }
 
     size_t total_order_count() const {
@@ -70,7 +74,24 @@ public:
         return n;
     }
 
+    // snapshot: list all active symbols
+    std::vector<Symbol> symbols() const {
+        std::vector<Symbol> out;
+        out.reserve(books_.size());
+        for (auto& [sym, _] : books_) out.push_back(sym);
+        return out;
+    }
+
+    // mutable book access for restore
+    Book& mutable_book(const Symbol& sym) {
+        auto it = books_.find(sym);
+        if (it == books_.end())
+            throw std::runtime_error("unknown symbol: " + sym);
+        return it->second;
+    }
+
 private:
+    STPMode stp_mode_;
     std::unordered_map<Symbol, Book> books_;
 };
 

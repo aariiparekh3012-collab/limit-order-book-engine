@@ -7,6 +7,7 @@ namespace lob {
 
 // prices in ticks (integer), quantities in whole units. no floats.
 using OrderId   = uint64_t;
+using TraderId  = uint64_t;
 using Price     = int64_t;
 using Qty       = int64_t;
 using Timestamp = uint64_t;
@@ -19,6 +20,14 @@ enum class OrderType : uint8_t {
     Market,  // sweeps at any price, never rests
     IOC,     // fill what you can, kill the rest
     FOK      // all or nothing
+};
+
+// self-trade prevention modes
+enum class STPMode : uint8_t {
+    None,           // no STP — self-trades are allowed
+    CancelNewest,   // cancel the incoming (aggressor) order
+    CancelOldest,   // cancel the resting order
+    CancelBoth      // cancel both sides
 };
 
 inline const char* to_string(Side s) {
@@ -35,14 +44,25 @@ inline const char* to_string(OrderType t) {
     return "?";
 }
 
+inline const char* to_string(STPMode m) {
+    switch (m) {
+        case STPMode::None:         return "NONE";
+        case STPMode::CancelNewest: return "CANCEL_NEWEST";
+        case STPMode::CancelOldest: return "CANCEL_OLDEST";
+        case STPMode::CancelBoth:   return "CANCEL_BOTH";
+    }
+    return "?";
+}
+
 struct Order {
     OrderId   id;
     Side      side;
     Price     price;      // ignored for market orders
     Qty       qty;
     Timestamp ts;
-    OrderType type   = OrderType::Limit;
-    Symbol    symbol = "";
+    OrderType type      = OrderType::Limit;
+    Symbol    symbol    = "";
+    TraderId  trader_id = 0;  // 0 = no trader, STP won't fire
 };
 
 } // namespace lob

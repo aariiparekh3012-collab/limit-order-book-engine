@@ -27,6 +27,12 @@ void Book::submit(const Order& order, EventSink& sink) {
 
     Qty remaining = match_order(order, sink);
 
+    // STP killed the aggressor (cancel_newest or cancel_both)
+    if (remaining == -1) {
+        sink.on_event(CancelAck{order.id});
+        return;
+    }
+
     if (remaining <= 0) {
         sink.on_event(Filled{order.id});
         return;
@@ -83,33 +89,72 @@ TopOfBook Book::top() const {
     return tob;
 }
 
-// walks opposite side while prices cross, emits trades
+// walks opposite side while prices cross, emits trades.
+// returns remaining qty, or -1 if STP cancel_newest killed the aggressor.
 Qty Book::match_order(const Order& incoming, EventSink& sink) {
     Qty remaining = incoming.qty;
     bool is_market = (incoming.type == OrderType::Market);
+    bool stp_active = (stp_mode_ != STPMode::None && incoming.trader_id != 0);
 
     auto do_match = [&](auto& side_map, auto price_ok) {
-        while (remaining > 0 && !side_map.empty()) {
-            auto lvl = side_map.begin();
+        auto lvl = side_map.begin();
+        while (remaining > 0 && lvl != side_map.end()) {
             if (!is_market && !price_ok(lvl->first)) break;
 
             auto& queue = lvl->second;
-            while (remaining > 0 && !queue.empty()) {
-                auto& resting = queue.front();
-                Qty fill = std::min(remaining, resting.remaining);
+            auto it = queue.begin();
+            while (remaining > 0 && it != queue.end()) {
+                // self-trade check
+                if (stp_active && it->trader_id == incoming.trader_id && it->trader_id != 0) {
+                    OrderId rid = it->id;
+                    auto next = std::next(it);
 
-                sink.on_event(Trade{incoming.id, resting.id, resting.price, fill, incoming.ts});
+                    switch (stp_mode_) {
+                        case STPMode::CancelNewest:
+                            // kill the incoming order, leave resting alone
+                            sink.on_event(STPCancel{incoming.id, rid, stp_mode_});
+                            remaining = -1;
+                            return;
+                        case STPMode::CancelOldest:
+                            // kill the resting order, keep matching
+                            sink.on_event(STPCancel{incoming.id, rid, stp_mode_});
+                            order_index_.erase(rid);
+                            queue.erase(it);
+                            it = next;
+                            continue;
+                        case STPMode::CancelBoth:
+                            // kill both
+                            sink.on_event(STPCancel{incoming.id, rid, stp_mode_});
+                            order_index_.erase(rid);
+                            queue.erase(it);
+                            remaining = -1; // sentinel: aggressor is dead too
+                            if (queue.empty()) side_map.erase(lvl);
+                            return;
+                        case STPMode::None:
+                            break; // unreachable
+                    }
+                }
+
+                Qty fill = std::min(remaining, it->remaining);
+
+                sink.on_event(Trade{incoming.id, it->id, it->price, fill, incoming.ts});
                 remaining -= fill;
-                resting.remaining -= fill;
+                it->remaining -= fill;
 
-                if (resting.remaining <= 0) {
-                    OrderId rid = resting.id;
+                if (it->remaining <= 0) {
+                    OrderId rid = it->id;
                     order_index_.erase(rid);
-                    queue.pop_front();
+                    it = queue.erase(it);
                     sink.on_event(Filled{rid});
+                } else {
+                    ++it;
                 }
             }
-            if (queue.empty()) side_map.erase(lvl);
+
+            if (queue.empty())
+                lvl = side_map.erase(lvl);
+            else
+                ++lvl;
         }
     };
 
@@ -122,13 +167,17 @@ Qty Book::match_order(const Order& incoming, EventSink& sink) {
 }
 
 // read-only check for FOK: can we fill the full qty?
+// skips resting orders from the same trader when STP is active
 bool Book::can_fill(const Order& order) const {
     Qty need = order.qty;
+    bool stp_active = (stp_mode_ != STPMode::None && order.trader_id != 0);
 
     if (order.side == Side::Buy) {
         for (auto it = asks_.begin(); it != asks_.end() && need > 0; ++it) {
             if (it->first > order.price) break;
             for (const auto& r : it->second) {
+                // under STP, same-trader orders won't actually fill
+                if (stp_active && r.trader_id == order.trader_id) continue;
                 need -= r.remaining;
                 if (need <= 0) return true;
             }
@@ -137,6 +186,7 @@ bool Book::can_fill(const Order& order) const {
         for (auto it = bids_.begin(); it != bids_.end() && need > 0; ++it) {
             if (it->first < order.price) break;
             for (const auto& r : it->second) {
+                if (stp_active && r.trader_id == order.trader_id) continue;
                 need -= r.remaining;
                 if (need <= 0) return true;
             }
@@ -146,7 +196,7 @@ bool Book::can_fill(const Order& order) const {
 }
 
 void Book::place_on_book(const Order& order, Qty remaining) {
-    RestingOrder ro{order.id, order.side, order.price, remaining, order.ts};
+    RestingOrder ro{order.id, order.trader_id, order.side, order.price, remaining, order.ts};
 
     if (order.side == Side::Buy) {
         auto& q = bids_[order.price];
@@ -175,6 +225,32 @@ void Book::remove_order(Iterator it, Side side) {
             lvl->second.erase(it);
             if (lvl->second.empty()) asks_.erase(lvl);
         }
+    }
+}
+
+std::vector<RestingOrder> Book::dump_orders() const {
+    std::vector<RestingOrder> out;
+    out.reserve(order_index_.size());
+
+    // bids first (high to low), then asks (low to high)
+    // within each level, FIFO order is preserved by list iteration
+    for (auto& [price, queue] : bids_)
+        for (auto& ro : queue) out.push_back(ro);
+    for (auto& [price, queue] : asks_)
+        for (auto& ro : queue) out.push_back(ro);
+
+    return out;
+}
+
+void Book::restore_order(const RestingOrder& ro) {
+    if (ro.side == Side::Buy) {
+        auto& q = bids_[ro.price];
+        q.push_back(ro);
+        order_index_[ro.id] = std::prev(q.end());
+    } else {
+        auto& q = asks_[ro.price];
+        q.push_back(ro);
+        order_index_[ro.id] = std::prev(q.end());
     }
 }
 

@@ -7,12 +7,12 @@ using namespace lob;
 
 static uint64_t next_ts = 1;
 
-Order buy(OrderId id, Price price, Qty qty, OrderType type = OrderType::Limit) {
-    return {id, Side::Buy, price, qty, next_ts++, type};
+Order buy(OrderId id, Price price, Qty qty, OrderType type = OrderType::Limit, TraderId tid = 0) {
+    return {id, Side::Buy, price, qty, next_ts++, type, "", tid};
 }
 
-Order sell(OrderId id, Price price, Qty qty, OrderType type = OrderType::Limit) {
-    return {id, Side::Sell, price, qty, next_ts++, type};
+Order sell(OrderId id, Price price, Qty qty, OrderType type = OrderType::Limit, TraderId tid = 0) {
+    return {id, Side::Sell, price, qty, next_ts++, type, "", tid};
 }
 
 Order market_buy(OrderId id, Qty qty) {
@@ -345,4 +345,57 @@ TEST_CASE("same symbol crosses through exchange", "[exchange]") {
     ex.submit({2, Side::Sell, 150, 100, 2, OrderType::Limit, "AAPL"}, s);
     REQUIRE(has<Trade>(s));
     REQUIRE(ex.total_order_count() == 0);
+}
+
+// --- self-trade prevention ---
+
+TEST_CASE("STP cancel_newest kills aggressor", "[stp]") {
+    Book b(STPMode::CancelNewest); VectorSink s;
+    b.submit(buy(1, 100, 50, OrderType::Limit, 42), s); s.clear();
+    b.submit(sell(2, 100, 50, OrderType::Limit, 42), s);  // same trader
+    REQUIRE(has<STPCancel>(s));
+    REQUIRE(has<CancelAck>(s));           // aggressor cancelled
+    REQUIRE_FALSE(has<Trade>(s));         // no trade
+    REQUIRE(b.order_count() == 1);        // resting order untouched
+}
+
+TEST_CASE("STP cancel_oldest kills resting", "[stp]") {
+    Book b(STPMode::CancelOldest); VectorSink s;
+    b.submit(buy(1, 100, 50, OrderType::Limit, 42), s); s.clear();
+    b.submit(sell(2, 100, 50, OrderType::Limit, 42), s);  // same trader
+    REQUIRE(has<STPCancel>(s));
+    REQUIRE_FALSE(has<Trade>(s));
+    // resting was cancelled, aggressor rests instead
+    REQUIRE(b.order_count() == 1);
+}
+
+TEST_CASE("STP cancel_both kills both sides", "[stp]") {
+    Book b(STPMode::CancelBoth); VectorSink s;
+    b.submit(buy(1, 100, 50, OrderType::Limit, 42), s); s.clear();
+    b.submit(sell(2, 100, 50, OrderType::Limit, 42), s);  // same trader
+    REQUIRE(has<STPCancel>(s));
+    REQUIRE(has<CancelAck>(s));
+    REQUIRE_FALSE(has<Trade>(s));
+    REQUIRE(b.order_count() == 0);        // both gone
+}
+
+TEST_CASE("STP does not fire for different traders", "[stp]") {
+    Book b(STPMode::CancelNewest); VectorSink s;
+    b.submit(buy(1, 100, 50, OrderType::Limit, 42), s); s.clear();
+    b.submit(sell(2, 100, 50, OrderType::Limit, 99), s);  // different trader
+    REQUIRE(has<Trade>(s));
+    REQUIRE_FALSE(has<STPCancel>(s));
+    REQUIRE(b.order_count() == 0);
+}
+
+TEST_CASE("STP cancel_oldest skips self and fills next", "[stp]") {
+    Book b(STPMode::CancelOldest); VectorSink s;
+    // two resting bids: one from trader 42, one from trader 99
+    b.submit(buy(1, 100, 50, OrderType::Limit, 42), s);
+    b.submit(buy(2, 100, 50, OrderType::Limit, 99), s); s.clear();
+    // trader 42 sells — should skip their own resting bid, fill against trader 99
+    b.submit(sell(3, 100, 50, OrderType::Limit, 42), s);
+    REQUIRE(has<STPCancel>(s));    // own resting order cancelled
+    REQUIRE(has<Trade>(s));        // traded with trader 99's order
+    REQUIRE(first<Trade>(s).resting_id == 2);
 }

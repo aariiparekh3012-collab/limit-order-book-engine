@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <functional>
 #include <optional>
+#include <vector>
 
 namespace lob {
 
@@ -18,25 +19,39 @@ struct TopOfBook {
     Qty ask_qty = 0;
 };
 
+// public so snapshot code can read/write it
+struct RestingOrder {
+    OrderId   id;
+    TraderId  trader_id;
+    Side      side;
+    Price     price;
+    Qty       remaining;
+    Timestamp ts;
+};
+
 class Book {
 public:
+    explicit Book(STPMode stp = STPMode::None) : stp_mode_(stp) {}
+
     void submit(const Order& order, EventSink& sink);
     void cancel(OrderId id, EventSink& sink);
     TopOfBook top() const;
 
     size_t order_count() const { return order_index_.size(); }
+    STPMode stp_mode() const { return stp_mode_; }
+
+    // snapshot support: dump all resting orders in price-time priority
+    std::vector<RestingOrder> dump_orders() const;
+
+    // snapshot support: insert an order directly (no matching, no events)
+    // used to rebuild from a binary snapshot
+    void restore_order(const RestingOrder& ro);
 
 private:
-    struct RestingOrder {
-        OrderId   id;
-        Side      side;
-        Price     price;
-        Qty       remaining;
-        Timestamp ts;
-    };
-
     using Queue    = std::list<RestingOrder>;
     using Iterator = Queue::iterator;
+
+    STPMode stp_mode_;
 
     // bids sorted high-to-low, asks sorted low-to-high
     std::map<Price, Queue, std::greater<Price>> bids_;
