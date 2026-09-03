@@ -55,7 +55,7 @@ jobs:
         run: ctest --test-dir build-sonar --output-on-failure
 
       - name: Collect coverage into SonarQube XML
-        run: gcovr --sonarqube > coverage.xml
+        run: gcovr --sonarqube -r . build-sonar > coverage.xml
 
       - name: Run SonarCloud analysis
         uses: SonarSource/sonarqube-scan-action@v6

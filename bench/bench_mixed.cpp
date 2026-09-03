@@ -141,7 +141,7 @@ int main() {
     constexpr int MEASURED = 1'000'000;
     constexpr Price MID    = 1000;
 
-    std::mt19937 rng(1234);
+    std::mt19937 rng(1234); // NOSONAR — deterministic seed is intentional for reproducible benchmarks
     std::uniform_int_distribution<Price> price_jitter(-10, 10);
     std::uniform_int_distribution<Qty>   qty_dist(1, 100);
     std::bernoulli_distribution          side_dist(0.5);

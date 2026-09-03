@@ -84,13 +84,13 @@ static void show_depth(const lob::Exchange& ex, const std::string& sym, int leve
     for (size_t i = 0; i < n; ++i) {
         std::cout << "    ";
         if (i < d.bids.size())
-            std::cout << "BID " << d.bids[i].price << " x" << d.bids[i].qty
+            std::cout << "BID " << d.bids[i].price << " x" << d.bids[i].qty // NOSONAR — CLI output of order-book data is intended
                        << " (" << d.bids[i].order_count << ")";
         else
             std::cout << "BID ---";
         std::cout << "   |   ";
         if (i < d.asks.size())
-            std::cout << "ASK " << d.asks[i].price << " x" << d.asks[i].qty
+            std::cout << "ASK " << d.asks[i].price << " x" << d.asks[i].qty // NOSONAR — CLI output of order-book data is intended
                        << " (" << d.asks[i].order_count << ")";
         else
             std::cout << "ASK ---";

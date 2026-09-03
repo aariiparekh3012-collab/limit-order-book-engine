@@ -53,10 +53,10 @@ jobs:
         run: |
           sudo apt-get install -y lcov
           lcov --capture --directory build --output-file coverage.info \
-            --gcov-tool gcov-12 --ignore-errors mismatch,version
+            --gcov-tool gcov-12 --ignore-errors mismatch,version,source
           lcov --remove coverage.info '/usr/*' '*/build/_deps/*' \
-            --output-file coverage.info --ignore-errors unused,version
-          lcov --list coverage.info --ignore-errors version
+            --output-file coverage.info --ignore-errors mismatch,version,source
+          lcov --list coverage.info --ignore-errors mismatch,version,source
 
       - name: Benchmark (Release only)
         if: matrix.build_type == 'Release'
