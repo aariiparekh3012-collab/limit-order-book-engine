@@ -26,6 +26,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-12 g++-12
 
+      - name: Set up Python for gcovr
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install gcovr
+        run: pip install gcovr
+
       - name: Install Sonar C++ Build Wrapper
         uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v6
 
@@ -46,7 +54,13 @@ jobs:
       - name: Run tests (generates gcov data)
         run: ctest --test-dir build-sonar --output-on-failure
 
+      - name: Collect coverage into SonarQube XML
+        run: gcovr --sonarqube > coverage.xml
+
       - name: Run SonarCloud analysis
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            --define sonar.coverageReportPaths=coverage.xml
