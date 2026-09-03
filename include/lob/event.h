@@ -14,8 +14,9 @@ struct Partial   { OrderId order_id; Qty remaining; };
 struct CancelAck { OrderId order_id; };
 struct Reject    { OrderId order_id; std::string reason; };
 struct STPCancel { OrderId aggressor_id; OrderId resting_id; STPMode mode; };
+struct ModifyAck { OrderId order_id; Price new_price; Qty new_qty; };
 
-using Event = std::variant<Ack, Trade, Filled, Partial, CancelAck, Reject, STPCancel>;
+using Event = std::variant<Ack, Trade, Filled, Partial, CancelAck, Reject, STPCancel, ModifyAck>;
 
 // sink interface — test code collects into a vector, prod code logs to file
 class EventSink {

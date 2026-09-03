@@ -32,10 +32,15 @@ jobs:
 
       - name: Configure
         run: |
+          CMAKE_EXTRA=""
+          if [ "${{ matrix.compiler }}" = "gcc" ] && [ "${{ matrix.build_type }}" = "Debug" ]; then
+            CMAKE_EXTRA="-DCMAKE_CXX_FLAGS=--coverage"
+          fi
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
             -DCMAKE_C_COMPILER=${{ matrix.cc }} \
-            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            $CMAKE_EXTRA
 
       - name: Build
         run: cmake --build build -j$(nproc)
@@ -43,6 +48,16 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+      - name: Coverage report (GCC Debug only)
+        if: matrix.compiler == 'gcc' && matrix.build_type == 'Debug'
+        run: |
+          sudo apt-get install -y lcov
+          lcov --capture --directory build --output-file coverage.info --ignore-errors mismatch
+          lcov --remove coverage.info '/usr/*' '*/build/_deps/*' --output-file coverage.info --ignore-errors unused
+          lcov --list coverage.info
+
       - name: Benchmark (Release only)
         if: matrix.build_type == 'Release'
-        run: ./build/bench_submit
+        run: |
+          ./build/bench_submit
+          ./build/bench_mixed

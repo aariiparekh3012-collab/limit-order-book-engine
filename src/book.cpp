@@ -72,6 +72,70 @@ void Book::cancel(OrderId id, EventSink& sink) {
     sink.on_event(CancelAck{id});
 }
 
+void Book::modify(OrderId id, Price new_price, Qty new_qty, EventSink& sink) {
+    auto it = order_index_.find(id);
+    if (it == order_index_.end()) {
+        sink.on_event(Reject{id, "order not found"});
+        return;
+    }
+
+    if (new_qty <= 0) {
+        sink.on_event(Reject{id, "invalid quantity"});
+        return;
+    }
+    if (new_price <= 0) {
+        sink.on_event(Reject{id, "invalid price"});
+        return;
+    }
+
+    Iterator order_it = it->second;
+    Side     side      = order_it->side;
+    TraderId trader_id = order_it->trader_id;
+    Timestamp new_ts   = order_it->ts + 1;
+
+    // remove old resting order (no events — this is not a cancel)
+    remove_order(order_it, side);
+
+    // re-insert at new price/qty — loses time priority, placed at back of queue
+    RestingOrder ro{id, trader_id, side, new_price, new_qty, new_ts};
+    if (side == Side::Buy) {
+        auto& q = bids_[new_price];
+        q.push_back(ro);
+        order_index_[id] = std::prev(q.end());
+    } else {
+        auto& q = asks_[new_price];
+        q.push_back(ro);
+        order_index_[id] = std::prev(q.end());
+    }
+
+    sink.on_event(ModifyAck{id, new_price, new_qty});
+}
+
+MarketDepth Book::depth(int levels) const {
+    MarketDepth md;
+    if (levels <= 0) return md;
+
+    md.bids.reserve(std::min<size_t>(levels, bids_.size()));
+    for (auto& [price, queue] : bids_) {
+        if (static_cast<int>(md.bids.size()) >= levels) break;
+        Qty total = 0;
+        int count = 0;
+        for (auto& o : queue) { total += o.remaining; ++count; }
+        md.bids.push_back(DepthLevel{price, total, count});
+    }
+
+    md.asks.reserve(std::min<size_t>(levels, asks_.size()));
+    for (auto& [price, queue] : asks_) {
+        if (static_cast<int>(md.asks.size()) >= levels) break;
+        Qty total = 0;
+        int count = 0;
+        for (auto& o : queue) { total += o.remaining; ++count; }
+        md.asks.push_back(DepthLevel{price, total, count});
+    }
+
+    return md;
+}
+
 TopOfBook Book::top() const {
     TopOfBook tob;
 

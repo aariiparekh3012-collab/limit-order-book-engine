@@ -42,12 +42,20 @@ if(LOB_BUILD_TESTS)
     )
     FetchContent_MakeAvailable(Catch2)
 
-    add_executable(tests
-        tests/test_matching.cpp
-    )
-    target_link_libraries(tests PRIVATE lob Catch2::Catch2WithMain)
+    add_executable(test_matching tests/test_matching.cpp)
+    target_link_libraries(test_matching PRIVATE lob Catch2::Catch2WithMain)
+
+    add_executable(test_snapshot tests/test_snapshot.cpp)
+    target_link_libraries(test_snapshot PRIVATE lob Catch2::Catch2WithMain)
 
     include(CTest)
     include(Catch)
-    catch_discover_tests(tests)
+    catch_discover_tests(test_matching)
+    catch_discover_tests(test_snapshot)
 endif()
+
+# ──────────────────────────────────────────────
+# Mixed-workload benchmark
+# ──────────────────────────────────────────────
+add_executable(bench_mixed bench/bench_mixed.cpp)
+target_link_libraries(bench_mixed PRIVATE lob)

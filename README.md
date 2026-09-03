@@ -5,7 +5,7 @@
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://en.cppreference.com/w/cpp/17)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A deterministic limit order book and matching engine implemented in C++17. The engine maintains price-time priority, processes multiple order types, supports multiple symbols, and includes testing, snapshot utilities, a command-line interface, and a submission microbenchmark.
+A deterministic limit order book and matching engine implemented in C++17. The engine maintains price-time priority, processes multiple order types, supports order modification and L2 market depth, supports multiple symbols, and includes testing, snapshot utilities, a command-line interface, and both a submission and a mixed-workload microbenchmark.
 
 ## Features
 
@@ -17,6 +17,8 @@ A deterministic limit order book and matching engine implemented in C++17. The e
 - Immediate-or-Cancel (IOC) orders
 - Fill-or-Kill (FOK) orders
 - Order cancellation
+- Order modification (reprice and/or requantity, passive, loses time priority)
+- L2 market depth (aggregated qty and order count per price level, both sides)
 - Partial and complete fills
 - Deterministic trade generation
 - Snapshot serialization and restoration
@@ -39,6 +41,29 @@ The engine applies the following rules:
 7. Unfilled market and IOC quantity is cancelled.
 8. FOK orders execute only when the complete quantity can be filled immediately.
 
+## Order modification
+
+`modify(order_id, new_price, new_qty)` reprices and/or requantities a
+resting order in place:
+
+- It is a passive operation: the new price is never matched against the
+  opposite side, even if it would cross. It only changes what's resting.
+- It loses time priority. Internally a modify removes the order and
+  re-inserts it at the back of its (possibly new) price level's queue, so
+  two orders resting at the same price where the first is modified will
+  have the second execute first on the next incoming match.
+- Invalid input (`new_qty <= 0`, `new_price <= 0`, or an unknown order id)
+  is rejected and the resting order is left completely untouched.
+- `Book::modify` and `Exchange::modify` both emit a `ModifyAck{order_id,
+  new_price, new_qty}` on success.
+
+## L2 market depth
+
+`Book::depth(levels)` / `Exchange::depth(symbol, levels)` return up to
+`levels` aggregated price levels per side (best first): total resting
+quantity and order count at each price, without exposing individual order
+ids. Pass `--depth N` to `lob_cli` to print it after every order.
+
 ## Order types
 
 | Order type | Behaviour |
@@ -57,7 +82,8 @@ The engine applies the following rules:
 │       ├── ci.yml
 │       └── main.yml
 ├── bench/
-│   └── bench_submit.cpp
+│   ├── bench_submit.cpp
+│   └── bench_mixed.cpp
 ├── examples/
 │   └── sample_orders.csv
 ├── include/
@@ -127,36 +153,24 @@ A sample order file is provided in `examples/sample_orders.csv`.
 
 The CLI can be used to submit a reproducible sequence of orders and inspect the resulting trades and order-book state.
 
-## Run the benchmark
+## Run the benchmarks
 
 ```bash
 ./build/bench_submit
+./build/bench_mixed
 ```
 
-The existing benchmark is a single-threaded limit-order submission microbenchmark. It reports submission latency percentiles and aggregate throughput.
+`bench_submit` is a single-threaded limit-order submission microbenchmark: 1M orders after a 10k-order warmup, prices clustered tightly around a mid so most orders rest rather than cross repeatedly. It reports submission latency percentiles and aggregate throughput.
+
+`bench_mixed` models a more realistic order flow instead of pure insertion: after the same 10k-order warmup, it runs 1M operations split 60% limit submits (50/50 buy/sell, price clustered around a mid), 25% cancels (of a randomly chosen currently-resting order), and 15% modifies (price nudged ±1-3 ticks with a fresh random quantity, exercising the loses-time-priority reprice path). Latency is reported separately per operation type — a cancel is an O(1) list erase while a submit may walk several price levels, so averaging them together would hide that difference — plus one aggregate ops/sec throughput number across all three types combined. Both the workload mix and the RNG seed are fixed, so a given build reproduces the same sequence of operations run to run.
 
 Benchmark results depend on the processor, compiler, optimisation flags, operating system, and current system load. Performance figures should therefore be published together with the complete test environment and methodology.
 
-## Benchmark methodology roadmap
-
-The benchmark suite is being extended to include:
-
-- A deterministic mixed-event workload
-- Fixed random seed and workload definition
-- Warm-up iterations
-- Multiple measured iterations
-- Median throughput
-- p50, p95, and p99 latency
-- Peak memory usage
-- Final-state correctness verification
-- Raw machine-readable results
-- One-command reproducibility
-
-See [ROADMAP.md](ROADMAP.md) for planned improvements.
+See [ROADMAP.md](ROADMAP.md) for further planned improvements (result export, peak-memory tracking, raw machine-readable output).
 
 ## Correctness
 
-Performance is evaluated only alongside correctness. The test suite covers matching behaviour such as:
+Performance is evaluated only alongside correctness. 62 test cases across two Catch2 executables (`test_matching`, 52 cases; `test_snapshot`, 10 cases) cover matching behaviour such as:
 
 - Price priority
 - FIFO ordering at the same price
@@ -165,9 +179,13 @@ Performance is evaluated only alongside correctness. The test suite covers match
 - Market-order behaviour
 - IOC behaviour
 - FOK behaviour
+- Self-trade prevention (all three modes)
 - Cancellation
+- Order modification, including loss of time priority and rejection paths
+- L2 market depth, including aggregation and post-trade updates
 - Multi-symbol isolation
 - Snapshot and restoration behaviour
+- Stress/edge cases: 10,000 resting orders, sweeps across 100 price levels, rapid submit/cancel cycles
 
 ## Design
 
@@ -182,8 +200,9 @@ GitHub Actions automatically:
 1. Configures the CMake project.
 2. Builds using GCC and Clang.
 3. Tests Debug and Release configurations.
-4. Runs the submission benchmark for Release builds.
-5. Performs SonarCloud static analysis in a separate workflow.
+4. Generates a code coverage report (via `lcov`/`gcov`) for the GCC Debug build.
+5. Runs both benchmarks for Release builds.
+6. Performs SonarCloud static analysis in a separate workflow.
 
 ## Current scope
 
@@ -202,8 +221,6 @@ This project focuses on the in-memory matching-engine core. It is not a producti
 
 Planned improvements include:
 
-- Reproducible mixed-workload benchmarks
-- Additional cancellation and modification benchmarks
 - Benchmark result export
 - Expanded snapshot-test integration
 - Improved replay tooling

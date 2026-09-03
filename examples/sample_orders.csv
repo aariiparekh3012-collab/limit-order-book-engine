@@ -29,3 +29,11 @@ CANCEL,2
 
 # Scenario 8: Cancel non-existent
 CANCEL,999
+
+# Scenario 9: Modify — format: MODIFY,<order_id>,<new_price>,<new_qty>
+# order 4 (SELL 15200x100) reprices down to 15150 and grows to 120 —
+# it loses time priority and joins the back of the 15150 queue.
+MODIFY,4,15150,120
+
+# Scenario 10: Modify non-existent order (should reject)
+MODIFY,9999,15000,10

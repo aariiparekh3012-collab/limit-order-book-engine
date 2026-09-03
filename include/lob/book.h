@@ -29,13 +29,26 @@ struct RestingOrder {
     Timestamp ts;
 };
 
+struct DepthLevel {
+    Price price;
+    Qty   qty;
+    int   order_count;
+};
+
+struct MarketDepth {
+    std::vector<DepthLevel> bids;  // best (highest) first
+    std::vector<DepthLevel> asks;  // best (lowest) first
+};
+
 class Book {
 public:
     explicit Book(STPMode stp = STPMode::None) : stp_mode_(stp) {}
 
     void submit(const Order& order, EventSink& sink);
     void cancel(OrderId id, EventSink& sink);
+    void modify(OrderId id, Price new_price, Qty new_qty, EventSink& sink);
     TopOfBook top() const;
+    MarketDepth depth(int levels) const;
 
     size_t order_count() const { return order_index_.size(); }
     STPMode stp_mode() const { return stp_mode_; }

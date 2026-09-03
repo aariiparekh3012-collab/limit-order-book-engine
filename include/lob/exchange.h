@@ -52,10 +52,36 @@ public:
         sink.on_event(Reject{id, "order not found"});
     }
 
+    // modify searches all books — order IDs are globally unique
+    void modify(OrderId id, Price new_price, Qty new_qty, EventSink& sink) {
+        for (auto& [sym, book] : books_) {
+            if (book.order_count() == 0) continue;
+
+            VectorSink probe;
+            book.modify(id, new_price, new_qty, probe);
+
+            // if we got a ModifyAck, it was found — forward and return
+            for (const auto& e : probe.events) {
+                if (std::holds_alternative<ModifyAck>(e)) {
+                    for (const auto& ev : probe.events) sink.on_event(ev);
+                    return;
+                }
+            }
+            // otherwise it was a reject from this book, try the next one
+        }
+        sink.on_event(Reject{id, "order not found"});
+    }
+
     TopOfBook top(const Symbol& sym) const {
         auto it = books_.find(sym);
         if (it == books_.end()) return {};
         return it->second.top();
+    }
+
+    MarketDepth depth(const Symbol& sym, int levels) const {
+        auto it = books_.find(sym);
+        if (it == books_.end()) return {};
+        return it->second.depth(levels);
     }
 
     const Book& book(const Symbol& sym) const {

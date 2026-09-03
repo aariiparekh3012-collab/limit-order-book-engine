@@ -72,6 +72,12 @@ private:
              << R"(,"resting_id":)" << e.resting_id
              << R"(,"mode":")" << to_string(e.mode) << "\"}\n";
     }
+
+    void write(const ModifyAck& e) {
+        out_ << R"({"event":"MODIFY_ACK","order_id":)" << e.order_id
+             << R"(,"new_price":)" << e.new_price
+             << R"(,"new_qty":)" << e.new_qty << "}\n";
+    }
 };
 
 } // namespace lob
