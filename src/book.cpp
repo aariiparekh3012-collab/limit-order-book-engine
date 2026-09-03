@@ -192,7 +192,7 @@ Qty Book::match_order(const Order& incoming, EventSink& sink) {
                             order_index_.erase(rid);
                             queue.erase(it);
                             remaining = -1; // sentinel: aggressor is dead too
-                            if (queue.empty()) side_map.erase(lvl);
+                            if (queue.empty()) lvl = side_map.erase(lvl);
                             return;
                         case STPMode::None:
                             break; // unreachable

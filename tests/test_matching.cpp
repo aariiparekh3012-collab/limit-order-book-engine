@@ -400,6 +400,17 @@ TEST_CASE("STP cancel_oldest skips self and fills next", "[stp]") {
     REQUIRE(first<Trade>(s).resting_id == 2);
 }
 
+TEST_CASE("STP cancel_both when level becomes empty", "[stp][edge]") {
+    Book b(STPMode::CancelBoth); VectorSink s;
+    // one resting order at a price from same trader; incoming should cancel both
+    b.submit(buy(1, 100, 50, OrderType::Limit, 42), s); s.clear();
+    b.submit(sell(2, 100, 50, OrderType::Limit, 42), s);  // same trader
+    REQUIRE(has<STPCancel>(s));
+    REQUIRE(has<CancelAck>(s));
+    REQUIRE_FALSE(has<Trade>(s));
+    REQUIRE(b.order_count() == 0);
+}
+
 // --- market depth ---
 
 TEST_CASE("depth returns correct levels", "[depth]") {
