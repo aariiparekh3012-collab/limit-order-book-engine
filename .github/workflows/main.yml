@@ -21,19 +21,30 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install compilers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-12 g++-12
+
       - name: Install Sonar C++ Build Wrapper
         uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v6
 
-      - name: Configure CMake
+      - name: Configure CMake (Debug + coverage)
         run: |
           cmake -S . -B build-sonar \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=gcc-12 \
+            -DCMAKE_CXX_COMPILER=g++-12 \
+            -DCMAKE_CXX_FLAGS="--coverage"
 
       - name: Build through Sonar Build Wrapper
         run: |
           build-wrapper-linux-x86-64 \
             --out-dir "${{ env.BUILD_WRAPPER_OUT_DIR }}" \
             cmake --build build-sonar --parallel
+
+      - name: Run tests (generates gcov data)
+        run: ctest --test-dir build-sonar --output-on-failure
 
       - name: Run SonarCloud analysis
         uses: SonarSource/sonarqube-scan-action@v6

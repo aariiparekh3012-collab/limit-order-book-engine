@@ -63,9 +63,7 @@ static lob::STPMode parse_stp(const char* s) {
     if (u == "NEWEST" || u == "CANCEL_NEWEST") return lob::STPMode::CancelNewest;
     if (u == "OLDEST" || u == "CANCEL_OLDEST") return lob::STPMode::CancelOldest;
     if (u == "BOTH"   || u == "CANCEL_BOTH")   return lob::STPMode::CancelBoth;
-    std::cerr << "unknown STP mode: " << s << " (use newest, oldest, or both)\n";
-    std::exit(1);
-    return lob::STPMode::None;
+    throw std::runtime_error("unknown STP mode: " + std::string(s) + " (use newest, oldest, or both)");
 }
 
 static void show_tob(const lob::Exchange& ex, const std::string& sym) {

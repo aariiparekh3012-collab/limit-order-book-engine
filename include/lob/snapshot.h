@@ -36,14 +36,18 @@ namespace detail {
 
 template<typename T>
 inline void write_raw(std::ostream& out, const T& val) {
-    out.write(reinterpret_cast<const char*>(&val), sizeof(T));
+    char buf[sizeof(T)];
+    std::memcpy(buf, &val, sizeof(T));
+    out.write(buf, sizeof(T));
 }
 
 template<typename T>
 inline T read_raw(std::istream& in) {
-    T val;
-    in.read(reinterpret_cast<char*>(&val), sizeof(T));
+    char buf[sizeof(T)];
+    in.read(buf, sizeof(T));
     if (!in) throw std::runtime_error("snapshot: unexpected end of stream");
+    T val;
+    std::memcpy(&val, buf, sizeof(T));
     return val;
 }
 

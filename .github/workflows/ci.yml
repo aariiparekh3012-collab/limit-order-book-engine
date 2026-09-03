@@ -52,9 +52,11 @@ jobs:
         if: matrix.compiler == 'gcc' && matrix.build_type == 'Debug'
         run: |
           sudo apt-get install -y lcov
-          lcov --capture --directory build --output-file coverage.info --ignore-errors mismatch
-          lcov --remove coverage.info '/usr/*' '*/build/_deps/*' --output-file coverage.info --ignore-errors unused
-          lcov --list coverage.info
+          lcov --capture --directory build --output-file coverage.info \
+            --gcov-tool gcov-12 --ignore-errors mismatch,version
+          lcov --remove coverage.info '/usr/*' '*/build/_deps/*' \
+            --output-file coverage.info --ignore-errors unused,version
+          lcov --list coverage.info --ignore-errors version
 
       - name: Benchmark (Release only)
         if: matrix.build_type == 'Release'
