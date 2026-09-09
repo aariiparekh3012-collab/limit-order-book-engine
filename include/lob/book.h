@@ -49,6 +49,7 @@ public:
     void modify(OrderId id, Price new_price, Qty new_qty, EventSink& sink);
     TopOfBook top() const;
     MarketDepth depth(int levels) const;
+    bool contains(OrderId id) const { return order_index_.count(id) != 0; }
 
     size_t order_count() const { return order_index_.size(); }
     STPMode stp_mode() const { return stp_mode_; }
