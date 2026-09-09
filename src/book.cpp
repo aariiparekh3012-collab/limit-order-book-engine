@@ -240,8 +240,14 @@ bool Book::can_fill(const Order& order) const {
         for (auto it = asks_.begin(); it != asks_.end() && need > 0; ++it) {
             if (it->first > order.price) break;
             for (const auto& r : it->second) {
-                // under STP, same-trader orders won't actually fill
-                if (stp_active && r.trader_id == order.trader_id) continue;
+                if (stp_active && r.trader_id == order.trader_id) {
+                    // CancelNewest and CancelBoth stop the aggressor at the
+                    // first self-match. Liquidity behind that order cannot
+                    // make an FOK fillable. CancelOldest removes the resting
+                    // self-order and continues, so only that mode may skip it.
+                    if (stp_mode_ == STPMode::CancelOldest) continue;
+                    return false;
+                }
                 need -= r.remaining;
                 if (need <= 0) return true;
             }
@@ -250,7 +256,10 @@ bool Book::can_fill(const Order& order) const {
         for (auto it = bids_.begin(); it != bids_.end() && need > 0; ++it) {
             if (it->first < order.price) break;
             for (const auto& r : it->second) {
-                if (stp_active && r.trader_id == order.trader_id) continue;
+                if (stp_active && r.trader_id == order.trader_id) {
+                    if (stp_mode_ == STPMode::CancelOldest) continue;
+                    return false;
+                }
                 need -= r.remaining;
                 if (need <= 0) return true;
             }

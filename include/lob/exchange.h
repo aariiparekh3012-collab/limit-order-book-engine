@@ -28,46 +28,38 @@ public:
             sink.on_event(Reject{order.id, "unknown symbol: " + order.symbol});
             return;
         }
+
+        // Order IDs identify active orders across the whole exchange, not
+        // merely within one symbol's book.  Without this check, cancel and
+        // modify would be ambiguous when two symbols contained the same ID.
+        for (const auto& [_, book] : books_) {
+            if (book.contains(order.id)) {
+                sink.on_event(Reject{order.id, "duplicate order id"});
+                return;
+            }
+        }
         it->second.submit(order, sink);
     }
 
-    // cancel searches all books — order IDs are globally unique
-    // TODO: if this becomes a bottleneck, add a global id->symbol index
+    // Cancel searches all books. Active order IDs are globally unique.
     void cancel(OrderId id, EventSink& sink) {
         for (auto& [sym, book] : books_) {
-            if (book.order_count() == 0) continue;
-
-            VectorSink probe;
-            book.cancel(id, probe);
-
-            // if we got a CancelAck, it was found — forward and return
-            for (const auto& e : probe.events) {
-                if (std::holds_alternative<CancelAck>(e)) {
-                    for (const auto& ev : probe.events) sink.on_event(ev);
-                    return;
-                }
+            if (book.contains(id)) {
+                book.cancel(id, sink);
+                return;
             }
-            // otherwise it was a reject from this book, try the next one
         }
         sink.on_event(Reject{id, "order not found"});
     }
 
-    // modify searches all books — order IDs are globally unique
+    // Modify searches all books. Routing by presence preserves the precise
+    // validation error emitted by Book::modify.
     void modify(OrderId id, Price new_price, Qty new_qty, EventSink& sink) {
         for (auto& [sym, book] : books_) {
-            if (book.order_count() == 0) continue;
-
-            VectorSink probe;
-            book.modify(id, new_price, new_qty, probe);
-
-            // if we got a ModifyAck, it was found — forward and return
-            for (const auto& e : probe.events) {
-                if (std::holds_alternative<ModifyAck>(e)) {
-                    for (const auto& ev : probe.events) sink.on_event(ev);
-                    return;
-                }
+            if (book.contains(id)) {
+                book.modify(id, new_price, new_qty, sink);
+                return;
             }
-            // otherwise it was a reject from this book, try the next one
         }
         sink.on_event(Reject{id, "order not found"});
     }
