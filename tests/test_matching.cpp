@@ -231,6 +231,23 @@ TEST_CASE("FOK fills across price levels", "[fok]") {
     REQUIRE(has<Filled>(s));
 }
 
+TEST_CASE("FOK remains atomic when STP would stop the aggressor", "[fok][stp][regression]") {
+    for (auto mode : {STPMode::CancelNewest, STPMode::CancelBoth}) {
+        Book b(mode); VectorSink s;
+        b.submit(sell(1, 100, 3, OrderType::Limit, 99), s);
+        b.submit(sell(2, 100, 1, OrderType::Limit, 42), s);
+        b.submit(sell(3, 100, 7, OrderType::Limit, 99), s); s.clear();
+
+        b.submit(buy(4, 100, 10, OrderType::FOK, 42), s);
+
+        REQUIRE(has<Reject>(s));
+        REQUIRE_FALSE(has<Ack>(s));
+        REQUIRE(trade_count(s) == 0);
+        REQUIRE(b.order_count() == 3);
+        REQUIRE(b.top().ask_qty == 11);
+    }
+}
+
 // --- cancel ---
 
 TEST_CASE("cancel resting order", "[cancel]") {
@@ -324,6 +341,21 @@ TEST_CASE("exchange rejects unknown symbol", "[exchange]") {
     ex.add_symbol("AAPL");
     ex.submit({1, Side::Buy, 150, 100, 1, OrderType::Limit, "GOOG"}, s);
     REQUIRE(has<Reject>(s));
+}
+
+TEST_CASE("exchange rejects duplicate active id across symbols", "[exchange][regression]") {
+    Exchange ex; VectorSink s;
+    ex.add_symbol("AAPL");
+    ex.add_symbol("TSLA");
+
+    ex.submit({1, Side::Buy, 150, 100, 1, OrderType::Limit, "AAPL"}, s);
+    s.clear();
+    ex.submit({1, Side::Buy, 250, 50, 2, OrderType::Limit, "TSLA"}, s);
+
+    REQUIRE(has<Reject>(s));
+    REQUIRE(first<Reject>(s).reason == "duplicate order id");
+    REQUIRE(ex.total_order_count() == 1);
+    REQUIRE(ex.book("TSLA").order_count() == 0);
 }
 
 TEST_CASE("different symbols don't cross", "[exchange]") {
@@ -555,6 +587,21 @@ TEST_CASE("modify through exchange", "[modify][exchange]") {
     REQUIRE(ex.top("AAPL").best_bid == 155);
     REQUIRE(ex.top("AAPL").bid_qty == 80);
     REQUIRE(ex.top("TSLA").best_bid == 250); // untouched
+}
+
+TEST_CASE("exchange preserves modify validation error", "[modify][exchange][regression]") {
+    Exchange ex; VectorSink s;
+    ex.add_symbol("AAPL");
+    ex.add_symbol("TSLA");
+    ex.submit({1, Side::Buy, 150, 100, 1, OrderType::Limit, "AAPL"}, s);
+    s.clear();
+
+    ex.modify(1, 0, 100, s);
+
+    REQUIRE(has<Reject>(s));
+    REQUIRE(first<Reject>(s).reason == "invalid price");
+    REQUIRE(ex.top("AAPL").best_bid == 150);
+    REQUIRE(ex.top("AAPL").bid_qty == 100);
 }
 
 // --- stress / edge cases ---
