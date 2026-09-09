@@ -248,6 +248,53 @@ TEST_CASE("FOK remains atomic when STP would stop the aggressor", "[fok][stp][re
     }
 }
 
+TEST_CASE("sell FOK remains atomic when STP would stop the aggressor", "[fok][stp][regression]") {
+    for (auto mode : {STPMode::CancelNewest, STPMode::CancelBoth}) {
+        Book b(mode); VectorSink s;
+        b.submit(buy(1, 100, 3, OrderType::Limit, 99), s);
+        b.submit(buy(2, 100, 1, OrderType::Limit, 42), s);
+        b.submit(buy(3, 100, 7, OrderType::Limit, 99), s); s.clear();
+
+        b.submit(sell(4, 100, 10, OrderType::FOK, 42), s);
+
+        REQUIRE(has<Reject>(s));
+        REQUIRE_FALSE(has<Ack>(s));
+        REQUIRE(trade_count(s) == 0);
+        REQUIRE(b.order_count() == 3);
+        REQUIRE(b.top().bid_qty == 11);
+    }
+}
+
+TEST_CASE("FOK with cancel-oldest skips self orders and fills", "[fok][stp][regression]") {
+    {
+        Book b(STPMode::CancelOldest); VectorSink s;
+        b.submit(sell(1, 100, 2, OrderType::Limit, 42), s);
+        b.submit(sell(2, 100, 5, OrderType::Limit, 99), s); s.clear();
+
+        b.submit(buy(3, 100, 5, OrderType::FOK, 42), s);
+
+        REQUIRE(has<Ack>(s));
+        REQUIRE(has<STPCancel>(s));
+        REQUIRE(has<Filled>(s));
+        REQUIRE(trade_count(s) == 1);
+        REQUIRE(b.order_count() == 0);
+    }
+
+    {
+        Book b(STPMode::CancelOldest); VectorSink s;
+        b.submit(buy(4, 100, 2, OrderType::Limit, 42), s);
+        b.submit(buy(5, 100, 5, OrderType::Limit, 99), s); s.clear();
+
+        b.submit(sell(6, 100, 5, OrderType::FOK, 42), s);
+
+        REQUIRE(has<Ack>(s));
+        REQUIRE(has<STPCancel>(s));
+        REQUIRE(has<Filled>(s));
+        REQUIRE(trade_count(s) == 1);
+        REQUIRE(b.order_count() == 0);
+    }
+}
+
 // --- cancel ---
 
 TEST_CASE("cancel resting order", "[cancel]") {
@@ -377,6 +424,25 @@ TEST_CASE("same symbol crosses through exchange", "[exchange]") {
     ex.submit({2, Side::Sell, 150, 100, 2, OrderType::Limit, "AAPL"}, s);
     REQUIRE(has<Trade>(s));
     REQUIRE(ex.total_order_count() == 0);
+}
+
+TEST_CASE("cancel routes to the owning symbol", "[cancel][exchange][regression]") {
+    Exchange ex; VectorSink s;
+    ex.add_symbol("AAPL");
+    ex.add_symbol("TSLA");
+    ex.submit({1, Side::Buy, 150, 100, 1, OrderType::Limit, "AAPL"}, s);
+    ex.submit({2, Side::Buy, 250, 50, 2, OrderType::Limit, "TSLA"}, s); s.clear();
+
+    ex.cancel(2, s);
+
+    REQUIRE(has<CancelAck>(s));
+    REQUIRE(ex.book("AAPL").order_count() == 1);
+    REQUIRE(ex.book("TSLA").order_count() == 0);
+
+    s.clear();
+    ex.cancel(999, s);
+    REQUIRE(has<Reject>(s));
+    REQUIRE(first<Reject>(s).reason == "order not found");
 }
 
 // --- self-trade prevention ---
