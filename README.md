@@ -5,7 +5,9 @@
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://en.cppreference.com/w/cpp/17)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A deterministic limit order book and matching engine implemented in C++17. The engine maintains price-time priority, processes multiple order types, supports order modification and L2 market depth, supports multiple symbols, and includes testing, snapshot utilities, a command-line interface, and both a submission and a mixed-workload microbenchmark.
+A deterministic limit order book and matching engine implemented in C++17.
+
+**Interactive replay lab:** open [`demo/index.html`](demo/index.html) locally in a browser to scrub a deterministic order stream, inspect L2 depth and examine execution VWAP and implementation shortfall for an FOK research order. The engine maintains price-time priority, processes multiple order types, supports order modification and L2 market depth, supports multiple symbols, and includes testing, snapshot utilities, a command-line interface, and both a submission and a mixed-workload microbenchmark.
 
 ## Features
 
