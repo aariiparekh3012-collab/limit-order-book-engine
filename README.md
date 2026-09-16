@@ -7,7 +7,7 @@
 
 A deterministic limit order book and matching engine implemented in C++17.
 
-**Interactive replay lab:** open [`demo/index.html`](demo/index.html) locally in a browser to scrub a deterministic order stream, inspect L2 depth and examine execution VWAP and implementation shortfall for an FOK research order. The engine maintains price-time priority, processes multiple order types, supports order modification and L2 market depth, supports multiple symbols, and includes testing, snapshot utilities, a command-line interface, and both a submission and a mixed-workload microbenchmark.
+**[Open the interactive replay lab](https://aariiparekh3012-collab.github.io/limit-order-book-engine/)** to scrub a deterministic order stream, inspect L2 depth and examine execution VWAP and implementation shortfall for an FOK research order. The engine maintains price-time priority, processes multiple order types, supports order modification and L2 market depth, supports multiple symbols, and includes testing, snapshot utilities, a command-line interface, and both a submission and a mixed-workload microbenchmark. The demo is also available locally at [`demo/index.html`](demo/index.html).
 
 ## Features
 
@@ -82,7 +82,8 @@ ids. Pass `--depth N` to `lob_cli` to print it after every order.
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml
-│       └── main.yml
+│       ├── main.yml
+│       └── pages.yml
 ├── bench/
 │   ├── bench_submit.cpp
 │   └── bench_mixed.cpp
