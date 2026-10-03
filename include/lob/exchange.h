@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 #include <stdexcept>
+#include <memory>
 
 namespace lob {
 
@@ -15,7 +16,7 @@ public:
     explicit Exchange(STPMode stp = STPMode::None) : stp_mode_(stp) {}
 
     void add_symbol(const Symbol& sym) {
-        books_.emplace(sym, Book{stp_mode_});
+        books_.emplace(sym, std::make_unique<Book>(stp_mode_));
     }
 
     bool has_symbol(const Symbol& sym) const {
@@ -34,10 +35,10 @@ public:
             return;
         }
 
-        it->second.submit(order, sink);
+        it->second->submit(order, sink);
 
-        if (it->second.contains(order.id)) {
-            order_index_[order.id] = &it->second;
+        if (it->second->contains(order.id)) {
+            order_index_[order.id] = it->second.get();
         } else {
             order_index_.erase(order.id);
         }
@@ -67,20 +68,20 @@ public:
     TopOfBook top(const Symbol& sym) const {
         auto it = books_.find(sym);
         if (it == books_.end()) return {};
-        return it->second.top();
+        return it->second->top();
     }
 
     MarketDepth depth(const Symbol& sym, int levels) const {
         auto it = books_.find(sym);
         if (it == books_.end()) return {};
-        return it->second.depth(levels);
+        return it->second->depth(levels);
     }
 
     const Book& book(const Symbol& sym) const {
         auto it = books_.find(sym);
         if (it == books_.end())
             throw std::runtime_error("unknown symbol: " + sym);
-        return it->second;
+        return *it->second;
     }
 
     STPMode stp_mode() const { return stp_mode_; }
@@ -88,7 +89,7 @@ public:
 
     size_t total_order_count() const {
         size_t n = 0;
-        for (const auto& [_, b] : books_) n += b.order_count();
+        for (const auto& [_, b] : books_) n += b->order_count();
         return n;
     }
 
@@ -103,12 +104,12 @@ public:
         auto it = books_.find(sym);
         if (it == books_.end())
             throw std::runtime_error("unknown symbol: " + sym);
-        return it->second;
+        return *it->second;
     }
 
 private:
     STPMode stp_mode_;
-    std::unordered_map<Symbol, Book> books_;
+    std::unordered_map<Symbol, std::unique_ptr<Book>> books_;
     std::unordered_map<OrderId, Book*> order_index_;
 
     Book* find_book(OrderId id) {
@@ -117,9 +118,9 @@ private:
             return it->second;
 
         for (auto& [_, book] : books_) {
-            if (book.contains(id)) {
-                order_index_[id] = &book;
-                return &book;
+            if (book->contains(id)) {
+                order_index_[id] = book.get();
+                return book.get();
             }
         }
 
