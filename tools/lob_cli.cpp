@@ -113,13 +113,14 @@ static void show_depth(const lob::Exchange& ex, const std::string& sym, int leve
     }
 }
 
-int main(int argc, char* argv[]) {
+namespace lob::cli {
+
+int run_cli(int argc, char* argv[], std::istream& in, std::ostream& out, std::ostream& err) {
     if (argc < 2) {
-        std::cerr << "usage: lob_cli [--json] [--stp newest|oldest|both] [--depth N] <orders.csv | ->\n";
+        err << "usage: lob_cli [--json] [--stp newest|oldest|both] [--depth N] <orders.csv | ->\n";
         return 1;
     }
 
-    // parse flags
     bool json_mode = false;
     lob::STPMode stp_mode = lob::STPMode::None;
     int depth_levels = 0;
@@ -129,10 +130,10 @@ int main(int argc, char* argv[]) {
         if (std::strcmp(argv[i], "--json") == 0) {
             json_mode = true;
         } else if (std::strcmp(argv[i], "--stp") == 0) {
-            if (i + 1 >= argc) { std::cerr << "--stp needs an argument\n"; return 1; }
+            if (i + 1 >= argc) { err << "--stp needs an argument\n"; return 1; }
             stp_mode = parse_stp(argv[++i]);
         } else if (std::strcmp(argv[i], "--depth") == 0) {
-            if (i + 1 >= argc) { std::cerr << "--depth needs an argument\n"; return 1; }
+            if (i + 1 >= argc) { err << "--depth needs an argument\n"; return 1; }
             depth_levels = std::stoi(argv[++i]);
         } else {
             filepath = argv[i];
@@ -140,39 +141,37 @@ int main(int argc, char* argv[]) {
     }
 
     if (!filepath) {
-        std::cerr << "usage: lob_cli [--json] [--stp newest|oldest|both] [--depth N] <orders.csv | ->\n";
+        err << "usage: lob_cli [--json] [--stp newest|oldest|both] [--depth N] <orders.csv | ->\n";
         return 1;
     }
 
-    std::istream* in = &std::cin;
     std::ifstream file;
+    std::istream* input = &in;
     if (std::string(filepath) != "-") {
         file.open(filepath);
-        if (!file) { std::cerr << "can't open " << sanitize_for_log(filepath) << "\n"; return 1; }
-        in = &file;
+        if (!file) { err << "can't open " << sanitize_for_log(filepath) << "\n"; return 1; }
+        input = &file;
     }
 
     lob::Exchange exchange(stp_mode);
-
-    // pick the sink
     PrintSink print_sink;
-    lob::JsonSink json_sink(std::cout);
+    lob::JsonSink json_sink(out);
     lob::EventSink& sink = json_mode
         ? static_cast<lob::EventSink&>(json_sink)
         : static_cast<lob::EventSink&>(print_sink);
 
     if (!json_mode && stp_mode != lob::STPMode::None)
-        std::cout << "-- STP mode: " << lob::to_string(stp_mode) << " --\n\n";
+        out << "-- STP mode: " << lob::to_string(stp_mode) << " --\n\n";
 
     lob::Timestamp ts = 0;
     std::string line;
     int lineno = 0;
 
-    while (std::getline(*in, line)) {
+    while (std::getline(*input, line)) {
         ++lineno;
         line = trim(line);
         if (line.empty() || line[0] == '#') continue;
-        if (upper(line).find("ID,") == 0) continue; // header
+        if (upper(line).find("ID,") == 0) continue;
 
         std::istringstream ss(line);
         std::string tok;
@@ -181,26 +180,26 @@ int main(int argc, char* argv[]) {
         if (f.empty()) continue;
 
         if (upper(f[0]) == "CANCEL") {
-            if (f.size() < 2) { std::cerr << lineno << ": cancel needs id\n"; continue; }
+            if (f.size() < 2) { err << lineno << ": cancel needs id\n"; continue; }
             auto cid = std::stoull(f[1]);
-            if (!json_mode) std::cout << "CANCEL " << cid << "\n";
+            if (!json_mode) out << "CANCEL " << cid << "\n";
             exchange.cancel(cid, sink);
-            if (!json_mode) std::cout << "\n";
+            if (!json_mode) out << "\n";
             continue;
         }
 
         if (upper(f[0]) == "MODIFY") {
-            if (f.size() < 4) { std::cerr << lineno << ": modify needs id,new_price,new_qty\n"; continue; }
+            if (f.size() < 4) { err << lineno << ": modify needs id,new_price,new_qty\n"; continue; }
             auto mid       = std::stoull(f[1]);
             auto new_price = std::stoll(f[2]);
             auto new_qty   = std::stoll(f[3]);
-            if (!json_mode) std::cout << "MODIFY " << mid << " px=" << new_price << " qty=" << new_qty << "\n";
+            if (!json_mode) out << "MODIFY " << mid << " px=" << new_price << " qty=" << new_qty << "\n";
             exchange.modify(mid, new_price, new_qty, sink);
-            if (!json_mode) std::cout << "\n";
+            if (!json_mode) out << "\n";
             continue;
         }
 
-        if (f.size() < 6) { std::cerr << lineno << ": need 6 fields\n"; continue; }
+        if (f.size() < 6) { err << lineno << ": need 6 fields\n"; continue; }
 
         try {
             lob::Order o;
@@ -212,22 +211,21 @@ int main(int argc, char* argv[]) {
             o.qty    = std::stoll(f[5]);
             o.ts     = ++ts;
 
-            // optional 7th field: trader_id
             if (f.size() >= 7 && !f[6].empty())
                 o.trader_id = std::stoull(f[6]);
 
             if (!exchange.has_symbol(o.symbol)) {
                 exchange.add_symbol(o.symbol);
                 if (!json_mode)
-                    std::cout << "-- new symbol: " << sanitize_for_log(o.symbol) << " --\n";
+                    out << "-- new symbol: " << sanitize_for_log(o.symbol) << " --\n";
             }
 
             if (!json_mode) {
-                std::cout << lob::to_string(o.type) << " " << lob::to_string(o.side)
-                          << " " << sanitize_for_log(o.symbol) << " id=" << o.id
-                          << " px=" << o.price << " qty=" << o.qty;
-                if (o.trader_id != 0) std::cout << " trader=" << o.trader_id;
-                std::cout << "\n";
+                out << lob::to_string(o.type) << " " << lob::to_string(o.side)
+                    << " " << sanitize_for_log(o.symbol) << " id=" << o.id
+                    << " px=" << o.price << " qty=" << o.qty;
+                if (o.trader_id != 0) out << " trader=" << o.trader_id;
+                out << "\n";
             }
 
             exchange.submit(o, sink);
@@ -235,10 +233,31 @@ int main(int argc, char* argv[]) {
             if (!json_mode) {
                 show_tob(exchange, o.symbol);
                 if (depth_levels > 0) show_depth(exchange, o.symbol, depth_levels);
-                std::cout << "\n";
+                out << "\n";
             }
         } catch (const std::exception& e) {
-            std::cerr << lineno << ": " << sanitize_for_log(e.what()) << "\n";
+            err << lineno << ": " << sanitize_for_log(e.what()) << "\n";
         }
     }
+
+    return 0;
 }
+
+} // namespace lob::cli
+
+#ifndef LOB_DISABLE_MAIN
+int main(int argc, char* argv[]) {
+    std::istream* in = &std::cin;
+    std::ifstream file;
+    std::string filepath = argc >= 2 ? argv[argc - 1] : "";
+    if (argc >= 2 && std::string(filepath) != "-") {
+        file.open(filepath);
+        if (!file) {
+            std::cerr << "can't open " << sanitize_for_log(filepath) << "\n";
+            return 1;
+        }
+        in = &file;
+    }
+    return lob::cli::run_cli(argc, argv, *in, std::cout, std::cerr);
+}
+#endif
