@@ -29,9 +29,6 @@ public:
             return;
         }
 
-        // Fast-path: if a recent submit or cancel has already mapped this order
-        // to a specific book, use it directly. This avoids a full scan across
-        // every symbol in the common case and keeps the API semantics unchanged.
         if (order_index_.count(order.id)) {
             sink.on_event(Reject{order.id, "duplicate order id"});
             return;
@@ -39,10 +36,6 @@ public:
 
         it->second.submit(order, sink);
 
-        // The book may have filled the incoming order and left it inactive; in
-        // that case, do not keep a stale entry. If the order remains resting,
-        // cache its home book for the cheaper cancel/modify path. We still fall
-        // back to scanning all books if the map is stale or missing.
         if (it->second.contains(order.id)) {
             order_index_[order.id] = &it->second;
         } else {
@@ -50,43 +43,25 @@ public:
         }
     }
 
-    // Cancel prefers the fast path through the global order index. If stale or
-    // missing, it falls back to the old O(number of symbols) search.
     void cancel(OrderId id, EventSink& sink) {
-        auto it = order_index_.find(id);
-        if (it != order_index_.end()) {
-            it->second->cancel(id, sink);
-            order_index_.erase(id);
+        Book* book = find_book(id);
+        if (book == nullptr) {
+            sink.on_event(Reject{id, "order not found"});
             return;
         }
 
-        for (auto& [sym, book] : books_) {
-            if (book.contains(id)) {
-                book.cancel(id, sink);
-                order_index_.erase(id);
-                return;
-            }
-        }
-        sink.on_event(Reject{id, "order not found"});
+        book->cancel(id, sink);
+        order_index_.erase(id);
     }
 
-    // Modify prefers the fast path through the global order index. If stale or
-    // missing, it falls back to the old O(number of symbols) search.
     void modify(OrderId id, Price new_price, Qty new_qty, EventSink& sink) {
-        auto it = order_index_.find(id);
-        if (it != order_index_.end()) {
-            it->second->modify(id, new_price, new_qty, sink);
+        Book* book = find_book(id);
+        if (book == nullptr) {
+            sink.on_event(Reject{id, "order not found"});
             return;
         }
 
-        for (auto& [sym, book] : books_) {
-            if (book.contains(id)) {
-                book.modify(id, new_price, new_qty, sink);
-                order_index_[id] = &book;
-                return;
-            }
-        }
-        sink.on_event(Reject{id, "order not found"});
+        book->modify(id, new_price, new_qty, sink);
     }
 
     TopOfBook top(const Symbol& sym) const {
@@ -117,7 +92,6 @@ public:
         return n;
     }
 
-    // snapshot: list all active symbols
     std::vector<Symbol> symbols() const {
         std::vector<Symbol> out;
         out.reserve(books_.size());
@@ -125,7 +99,6 @@ public:
         return out;
     }
 
-    // mutable book access for restore
     Book& mutable_book(const Symbol& sym) {
         auto it = books_.find(sym);
         if (it == books_.end())
@@ -136,12 +109,22 @@ public:
 private:
     STPMode stp_mode_;
     std::unordered_map<Symbol, Book> books_;
-
-    // Fast path for cancel/modify on active orders. This index is intentionally
-    // best-effort: the engine can remove orders during matching without the
-    // exchange knowing which order ID disappeared, so cancel/modify falls back to
-    // scanning all books if the entry is missing or stale.
     std::unordered_map<OrderId, Book*> order_index_;
+
+    Book* find_book(OrderId id) {
+        auto it = order_index_.find(id);
+        if (it != order_index_.end())
+            return it->second;
+
+        for (auto& [_, book] : books_) {
+            if (book.contains(id)) {
+                order_index_[id] = &book;
+                return &book;
+            }
+        }
+
+        return nullptr;
+    }
 };
 
 } // namespace lob
