@@ -165,16 +165,19 @@ void Book::modify(OrderId id, Price new_price, Qty new_qty, EventSink& sink) {
     TraderId trader_id = order->trader_id;
     Timestamp new_ts = order->ts + 1;
 
-    // remove old resting order (no events — this is not a cancel)
+    // remove_order clears the index and resets the node's id and links.
+    // Preserve the original identity before putting the node back in FIFO order.
     remove_order(order, side);
 
-    // re-insert at new price/qty — loses time priority, placed at back of queue
+    order->id = id;
+    order->trader_id = trader_id;
     order->price = new_price;
     order->remaining = new_qty;
     order->ts = new_ts;
 
     PriceLevel* level = get_or_create_level(new_price, side);
     level->add_order(order);
+    order_index_[id] = order;
 
     sink.on_event(ModifyAck{id, new_price, new_qty});
 }
