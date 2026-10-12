@@ -54,9 +54,7 @@ synthetic/benchmark order flow that doesn't care about self-trading).
 `Book::modify(id, new_price, new_qty, sink)` is a **cancel + re-submit**,
 not an in-place price/qty edit:
 
-1. Reject if the order doesn't exist, `new_qty <= 0`, or `new_price <= 0`
-   (mirrors `submit`'s validation) — the resting order is left completely
-   untouched on any of these paths.
+1. Reject if the order doesn't exist, `new_qty <= 0`, `new_price <= 0`, or the proposed price would cross or lock the opposite best quote. The original resting order and its FIFO priority are left untouched on rejection.
 2. Otherwise the old resting order is removed from its price level exactly
    like `cancel` does (no `CancelAck` is emitted for this internal removal
    — the caller only sees the final `ModifyAck`).
@@ -72,15 +70,7 @@ Two deliberate consequences:
   directly by `"modify loses time priority"` in the test suite: two orders
   resting at the same price, modify the first one's quantity, and the
   *second* order now has priority.
-- **Modify is passive — it never matches.** Even if `new_price` would cross
-  the opposite side (e.g. modifying a resting bid above the current best
-  ask), `modify()` does not walk the book or generate `Trade` events; it
-  only reprices the resting order. A caller that wants "modify and let it
-  match if it crosses" has to cancel and resubmit through `submit()`
-  instead, which does run the matching pass. This keeps `modify()`'s cost
-  and behavior predictable (does not invoke aggressive matching, never O(book depth))
-  and matches how most venues treat this call — it's explicitly a passive
-  book action, not a new aggressive order.
+- **Modify is passive — it never matches.** A new price that would cross or lock the opposite best quote is rejected before unlinking the resting order. This avoids a crossed book and preserves FIFO order on rejection. To trade aggressively, cancel and submit a new order through `submit()`. The crossing check scans price levels because prices are stored in hash maps.
 
 ## L2 market depth
 
@@ -190,17 +180,13 @@ Checked throughout `test_matching.cpp` (see `check_no_crossed_book()` and
 friends), these hold after every operation:
 
 1. **No crossed book at rest**: `best_bid < best_ask` whenever both exist.
-   Matching runs until the incoming order can no longer cross, so this
-   can't be violated by `submit()`; `modify()` deliberately can violate it
-   temporarily in principle (passive reprice, no re-match) but the test
-   suite's modify cases stay within a single side so this hasn't needed a
-   dedicated regression test yet — see "what's not here yet" below.
+   Incoming orders match until they no longer cross. Passive modifications now reject crossed or locked repricing before mutating book state, and a regression test checks both sides.
 2. **FIFO within a price level**: earlier arrival (`Timestamp`, effectively
-   insertion order into the `std::list`) always matches first at a given
+   insertion order into the intrusive FIFO queue) always matches first at a given
    price. `modify()` intentionally resets this for the modified order (see
    above).
 3. **No trade-through**: an aggressor never skips a resting order at a
-   better price for one at a worse price — the `std::map` walk visits price
+   better price for one at a worse price — the sorted price-key walk visits price
    levels in strict best-to-worst order and only stops when the price no
    longer crosses.
 4. **Quantity conservation**: for any operation,
