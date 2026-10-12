@@ -30,7 +30,18 @@ public:
             return;
         }
 
-        if (order_index_.count(order.id)) {
+        // The cache can contain IDs consumed as resting orders in prior matches.
+        // Validate against the owning book before treating a cached entry as live.
+        auto cached = order_index_.find(order.id);
+        if (cached != order_index_.end()) {
+            if (cached->second->contains(order.id)) {
+                sink.on_event(Reject{order.id, "duplicate order id"});
+                return;
+            }
+            order_index_.erase(cached);
+        }
+        // Also detect live IDs introduced through mutable_book/restore_order.
+        if (find_book(order.id) != nullptr) {
             sink.on_event(Reject{order.id, "duplicate order id"});
             return;
         }
@@ -114,8 +125,10 @@ private:
 
     Book* find_book(OrderId id) {
         auto it = order_index_.find(id);
-        if (it != order_index_.end())
-            return it->second;
+        if (it != order_index_.end()) {
+            if (it->second->contains(id)) return it->second;
+            order_index_.erase(it);
+        }
 
         for (auto& [_, book] : books_) {
             if (book->contains(id)) {
