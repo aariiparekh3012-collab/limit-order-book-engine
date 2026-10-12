@@ -103,12 +103,17 @@ private:
 
     // Pool of pre-allocated order nodes to reduce allocation churn
     std::vector<std::unique_ptr<RestingOrder>> order_pool_;
-    size_t pool_index_ = 0;
+    std::vector<RestingOrder*> free_orders_;  // recycled detached nodes
+
+public:
+    size_t allocated_node_count() const { return order_pool_.size(); }
+
+private:
 
     Qty  match_order(const Order& incoming, EventSink& sink);
     bool can_fill(const Order& order) const;
     void place_on_book(const Order& order, Qty remaining);
-    void remove_order(RestingOrder* order, Side side);
+    void remove_order(RestingOrder* order, Side side, bool recycle = true);
     
     RestingOrder* allocate_order();
     void deallocate_order(RestingOrder* order);
