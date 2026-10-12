@@ -810,3 +810,66 @@ TEST_CASE("exchange allows reusing a filled resting order ID", "[exchange][regre
     REQUIRE_FALSE(has<Reject>(s));
     REQUIRE(ex.book("TSLA").contains(1));
 }
+
+
+TEST_CASE("passive modification rejects crossed prices without changing resting state", "[modify][regression]") {
+    Book b; VectorSink sink;
+    b.submit(buy(1, 99, 4), sink);
+    b.submit(buy(2, 99, 6), sink);
+    b.submit(sell(3, 101, 8), sink);
+    sink.clear();
+
+    b.modify(1, 101, 20, sink);
+    REQUIRE(has<Reject>(sink));
+    REQUIRE(first<Reject>(sink).reason == "modify would cross book");
+    REQUIRE_FALSE(has<ModifyAck>(sink));
+    REQUIRE(b.order_count() == 3);
+    REQUIRE(b.top().best_bid == 99);
+    REQUIRE(b.top().best_ask == 101);
+    REQUIRE(b.top().bid_qty == 10);
+    REQUIRE(b.top().ask_qty == 8);
+
+    // A failed change must not move the original order to the back of FIFO.
+    sink.clear();
+    b.submit(sell(4, 99, 1), sink);
+    REQUIRE(first<Trade>(sink).resting_id == 1);
+
+    sink.clear();
+    b.modify(3, 99, 25, sink);
+    REQUIRE(has<Reject>(sink));
+    REQUIRE(first<Reject>(sink).reason == "modify would cross book");
+    REQUIRE(b.top().best_ask == 101);
+    REQUIRE(b.top().ask_qty == 8);
+
+    // Touching the spread is crossing, too.
+    sink.clear();
+    b.modify(3, 99, 8, sink);
+    REQUIRE(has<Reject>(sink));
+    REQUIRE(b.contains(3));
+}
+
+TEST_CASE("FOK cancel-oldest rejection is atomic with self and external liquidity", "[fok][stp][regression]") {
+    Book b(STPMode::CancelOldest); VectorSink sink;
+    b.submit(sell(1, 100, 5, OrderType::Limit, 42), sink);
+    b.submit(sell(2, 100, 4, OrderType::Limit, 99), sink);
+    b.submit(sell(3, 101, 3, OrderType::Limit, 99), sink);
+    sink.clear();
+
+    // Only seven non-self units exist. Neither STP nor trades may mutate state.
+    b.submit(buy(4, 101, 8, OrderType::FOK, 42), sink);
+    REQUIRE(has<Reject>(sink));
+    REQUIRE_FALSE(has<Ack>(sink));
+    REQUIRE_FALSE(has<Trade>(sink));
+    REQUIRE_FALSE(has<STPCancel>(sink));
+    REQUIRE(b.order_count() == 3);
+    REQUIRE(b.depth(2).asks[0].qty == 9);
+    REQUIRE(b.depth(2).asks[1].qty == 3);
+
+    sink.clear();
+    b.submit(buy(5, 101, 7, OrderType::FOK, 42), sink);
+    REQUIRE(has<Ack>(sink));
+    REQUIRE(has<STPCancel>(sink));
+    REQUIRE(trade_count(sink) == 2);
+    REQUIRE(has<Filled>(sink));
+    REQUIRE(b.order_count() == 0);
+}
