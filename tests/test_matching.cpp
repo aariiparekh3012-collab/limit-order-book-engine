@@ -597,6 +597,31 @@ TEST_CASE("modify qty of resting order", "[modify]") {
     REQUIRE(b.top().bid_qty == 80);
 }
 
+TEST_CASE("modified order remains addressable and cancellable", "[modify][regression]") {
+    Book b; VectorSink s;
+    b.submit(buy(1, 100, 50), s);
+    s.clear();
+
+    b.modify(1, 105, 80, s);
+    REQUIRE(has<ModifyAck>(s));
+    REQUIRE(b.contains(1));
+    REQUIRE(b.order_count() == 1);
+    REQUIRE(b.top().best_bid == 105);
+    REQUIRE(b.top().bid_qty == 80);
+
+    s.clear();
+    b.submit(buy(1, 99, 10), s);
+    REQUIRE(has<Reject>(s));
+    REQUIRE(first<Reject>(s).reason == "duplicate order id");
+
+    s.clear();
+    b.cancel(1, s);
+    REQUIRE(has<CancelAck>(s));
+    REQUIRE_FALSE(b.contains(1));
+    REQUIRE(b.order_count() == 0);
+    REQUIRE_FALSE(b.top().best_bid.has_value());
+}
+
 TEST_CASE("modify loses time priority", "[modify]") {
     Book b; VectorSink s;
     b.submit(buy(1, 100, 40), s);
