@@ -9,9 +9,9 @@ Book::~Book() {
 
 RestingOrder* Book::allocate_order() {
     // Pre-allocated pool: reuse or allocate new
-    if (pool_index_ < order_pool_.size()) {
-        RestingOrder* order = order_pool_[pool_index_].get();
-        ++pool_index_;
+    if (!free_orders_.empty()) {
+        RestingOrder* order = free_orders_.back();
+        free_orders_.pop_back();
         return order;
     }
     // Grow pool if needed
@@ -21,11 +21,11 @@ RestingOrder* Book::allocate_order() {
 }
 
 void Book::deallocate_order(RestingOrder* order) {
-    // Pool-backed allocation: just reset and move back
-    // Mark as unused by clearing id
+    // Return a detached node to the pool for reuse.
     order->id = 0;
     order->next = nullptr;
     order->prev = nullptr;
+    free_orders_.push_back(order);
 }
 
 PriceLevel* Book::get_or_create_level(Price p, Side side) {
@@ -167,7 +167,7 @@ void Book::modify(OrderId id, Price new_price, Qty new_qty, EventSink& sink) {
 
     // remove_order clears the index and resets the node's id and links.
     // Preserve the original identity before putting the node back in FIFO order.
-    remove_order(order, side);
+    remove_order(order, side, false);  // preserve node for immediate reinsertion
 
     order->id = id;
     order->trader_id = trader_id;
@@ -349,7 +349,7 @@ bool Book::can_fill(const Order& order) const {
         // Collect ask prices and sort
         std::vector<Price> prices;
         for (const auto& [p, _] : ask_levels_) {
-            if (p > order.price) break;
+            if (p > order.price) continue;
             prices.push_back(p);
         }
         std::sort(prices.begin(), prices.end());
@@ -372,7 +372,7 @@ bool Book::can_fill(const Order& order) const {
         // Collect bid prices and sort
         std::vector<Price> prices;
         for (const auto& [p, _] : bid_levels_) {
-            if (p < order.price) break;
+            if (p < order.price) continue;
             prices.push_back(p);
         }
         std::sort(prices.rbegin(), prices.rend());
@@ -410,7 +410,7 @@ void Book::place_on_book(const Order& order, Qty remaining) {
     order_index_[order.id] = ro;
 }
 
-void Book::remove_order(RestingOrder* order, Side side) {
+void Book::remove_order(RestingOrder* order, Side side, bool recycle) {
     order_index_.erase(order->id);
     
     PriceLevel* level = find_level(order->price, side);
@@ -419,7 +419,7 @@ void Book::remove_order(RestingOrder* order, Side side) {
         prune_empty_level(order->price, side);
     }
     
-    deallocate_order(order);
+    if (recycle) deallocate_order(order);
 }
 
 std::vector<RestingOrder> Book::dump_orders() const {
