@@ -43,6 +43,10 @@ The engine applies the following rules:
 7. Unfilled market and IOC quantity is cancelled.
 8. FOK orders execute only when the complete quantity can be filled immediately.
 
+## Implementation details
+
+The current engine stores price-level buckets in `std::unordered_map`, with FIFO queues implemented as intrusive doubly linked lists. Order IDs map to node pointers for average O(1) direct lookup, while a free list recycles detached nodes. Price keys are explicitly sorted for matching and L2 depth; best bid/ask discovery scans occupied levels. See [DESIGN.md](DESIGN.md) for the actual algorithmic costs and tradeoffs.
+
 ## Order modification
 
 `modify(order_id, new_price, new_qty)` reprices and/or requantities a
@@ -165,7 +169,7 @@ The CLI can be used to submit a reproducible sequence of orders and inspect the 
 
 `bench_submit` is a single-threaded limit-order submission microbenchmark: 1M orders after a 10k-order warmup, prices clustered tightly around a mid so most orders rest rather than cross repeatedly. It reports submission latency percentiles and aggregate throughput.
 
-`bench_mixed` models a more realistic order flow instead of pure insertion: after the same 10k-order warmup, it runs 1M operations split 60% limit submits (50/50 buy/sell, price clustered around a mid), 25% cancels (of a randomly chosen currently-resting order), and 15% modifies (price nudged ±1-3 ticks with a fresh random quantity, exercising the loses-time-priority reprice path). Latency is reported separately per operation type — a cancel is an O(1) list erase while a submit may walk several price levels, so averaging them together would hide that difference — plus one aggregate ops/sec throughput number across all three types combined. Both the workload mix and the RNG seed are fixed, so a given build reproduces the same sequence of operations run to run.
+`bench_mixed` models a more realistic order flow instead of pure insertion: after the same 10k-order warmup, it runs 1M operations split 60% limit submits (50/50 buy/sell, price clustered around a mid), 25% cancels (of a randomly chosen currently-resting order), and 15% modifies (price nudged ±1-3 ticks with a fresh random quantity, exercising the loses-time-priority reprice path). Latency is reported separately per operation type — a cancel uses an average O(1) hash lookup and intrusive-list unlink while a submit may sort and walk price levels, so averaging them together would hide that difference — plus one aggregate ops/sec throughput number across all three types combined. Both the workload mix and the RNG seed are fixed, so a given build reproduces the same sequence of operations run to run.
 
 Benchmark results depend on the processor, compiler, optimisation flags, operating system, and current system load. Performance figures should therefore be published together with the complete test environment and methodology.
 
@@ -173,7 +177,7 @@ See [ROADMAP.md](ROADMAP.md) for further planned improvements (result export, pe
 
 ## Correctness
 
-Performance is evaluated only alongside correctness. 62 test cases across two Catch2 executables (`test_matching`, 52 cases; `test_snapshot`, 10 cases) cover matching behaviour such as:
+Performance is evaluated only alongside correctness. a growing Catch2 test suite across `test_matching` and `test_snapshot` cover matching behaviour such as:
 
 - Price priority
 - FIFO ordering at the same price
