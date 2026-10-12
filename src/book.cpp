@@ -159,6 +159,23 @@ void Book::modify(OrderId id, Price new_price, Qty new_qty, EventSink& sink) {
         return;
     }
 
+    // Modifications are passive. Reject crossing prices before unlinking the
+    // existing node, preserving the old order and FIFO position on rejection.
+    Side current_side = it->second->side;
+    if (current_side == Side::Buy) {
+        auto ask = best_ask_price();
+        if (ask && new_price >= *ask) {
+            sink.on_event(Reject{id, "modify would cross book"});
+            return;
+        }
+    } else {
+        auto bid = best_bid_price();
+        if (bid && new_price <= *bid) {
+            sink.on_event(Reject{id, "modify would cross book"});
+            return;
+        }
+    }
+
     RestingOrder* order = it->second;
     Side side = order->side;
     TraderId trader_id = order->trader_id;
