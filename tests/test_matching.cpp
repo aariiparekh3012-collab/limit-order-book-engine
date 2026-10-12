@@ -762,3 +762,51 @@ TEST_CASE("rapid submit-cancel cycle", "[stress]") {
     }
     REQUIRE(b.order_count() == 0);
 }
+
+TEST_CASE("FOK checks every unordered price level", "[fok][regression]") {
+    Book asks; VectorSink s;
+    asks.submit(sell(1, 200, 10), s);  // excluded by FOK price
+    asks.submit(sell(2, 100, 10), s);
+    asks.submit(sell(3, 101, 10), s);
+    s.clear();
+    asks.submit(buy(4, 101, 20, OrderType::FOK), s);
+    REQUIRE(has<Filled>(s));
+    REQUIRE(trade_count(s) == 2);
+    REQUIRE(asks.order_count() == 1);
+
+    Book bids; VectorSink x;
+    bids.submit(buy(11, 50, 10), x);   // excluded by FOK price
+    bids.submit(buy(12, 100, 10), x);
+    bids.submit(buy(13, 101, 10), x);
+    x.clear();
+    bids.submit(sell(14, 100, 20, OrderType::FOK), x);
+    REQUIRE(has<Filled>(x));
+    REQUIRE(trade_count(x) == 2);
+    REQUIRE(bids.order_count() == 1);
+}
+
+TEST_CASE("recycles nodes after repeated cancellation and modification", "[stress][regression]") {
+    Book b; VectorSink s;
+    for (OrderId id = 1; id <= 1000; ++id) {
+        b.submit(buy(id, 100, 10), s);
+        b.modify(id, 101, 12, s);
+        REQUIRE(b.contains(id));
+        b.cancel(id, s);
+        s.clear();
+    }
+    REQUIRE(b.order_count() == 0);
+    REQUIRE(b.allocated_node_count() == 1);
+}
+
+TEST_CASE("exchange allows reusing a filled resting order ID", "[exchange][regression]") {
+    Exchange ex; VectorSink s;
+    ex.add_symbol("AAPL");
+    ex.add_symbol("TSLA");
+    ex.submit({1, Side::Buy, 100, 10, 1, OrderType::Limit, "AAPL"}, s);
+    ex.submit({2, Side::Sell, 100, 10, 2, OrderType::Limit, "AAPL"}, s);
+    REQUIRE(ex.total_order_count() == 0);
+    s.clear();
+    ex.submit({1, Side::Buy, 200, 10, 3, OrderType::Limit, "TSLA"}, s);
+    REQUIRE_FALSE(has<Reject>(s));
+    REQUIRE(ex.book("TSLA").contains(1));
+}
