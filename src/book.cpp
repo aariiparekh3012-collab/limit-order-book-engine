@@ -16,7 +16,6 @@ RestingOrder* Book::allocate_order() {
     }
     // Grow pool if needed
     order_pool_.push_back(std::make_unique<RestingOrder>());
-    ++pool_index_;
     return order_pool_.back().get();
 }
 
