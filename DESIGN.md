@@ -1,38 +1,16 @@
 # Design notes
 
-## Data structures
+## Current data structures
 
-Each side of the book is a `std::map<Price, std::list<RestingOrder>>`. Bids
-use `std::greater<Price>` (highest first), asks use the default `std::less`
-(lowest first). Within a price level, resting orders sit in a `std::list` in
-arrival order, so FIFO is just list iteration.
+The current implementation uses `std::unordered_map<Price, std::unique_ptr<PriceLevel>>` for each side. Within a level, orders are connected by an **intrusive doubly linked list** (`RestingOrder::next/prev`). An `unordered_map<OrderId, RestingOrder*>` provides average O(1) lookup of active orders. `RestingOrder` nodes are owned by a vector of unique pointers and recycled using a free-node list.
 
-A separate `std::unordered_map<OrderId, std::list<RestingOrder>::iterator>`
-(`order_index_`) gives O(1) lookup, cancel, and modify: it stores a stable
-iterator directly into the order's queue node. `std::list` iterators aren't
-invalidated by insertion or erasure elsewhere in the list, so this iterator
-stays valid for the order's entire lifetime in the book.
+Because price levels are **unordered**, `best_bid_price()` and `best_ask_price()` scan every occupied price level, O(m), and `match_order()` sorts price keys before matching, O(m log m) plus traversal of matched orders. `depth(k)` also sorts all price keys before collecting the first k levels; the complexity depends on m, not just k. Average hash lookup is O(1), with worst-case hash-collision degradation; cancelling an indexed order unlinks its intrusive node in O(1) plus average hash operations.
 
-Complexity, `n` = orders at a price level, `m` = number of distinct price
-levels on a side:
+The earlier version of this document described a sorted `std::map` of `std::list` buckets, which is **not** the current implementation. That design would make best-price access cheaper but change memory and insertion tradeoffs.
 
-| Operation | Cost |
-|---|---|
-| submit (new level) | O(log m) |
-| submit (existing level) | O(log m) amortized, O(1) queue push |
-| cancel | O(1) list erase + O(log m) if the level empties |
-| modify | O(1) removal + O(log m) re-insertion (same as cancel + submit) |
-| top of book | O(1) (`map::begin()`) |
-| depth(k) | O(k) per side |
+## Performance tradeoffs
 
-This is correct and simple, and it's what the test suite and benchmarks are
-written against. A faster approach — a flat array of price levels indexed by
-tick offset from a reference price, paired with an intrusive doubly-linked
-list embedded in the order struct — would avoid the `std::map` and
-`std::list` node-allocator overhead entirely and be far more cache-friendly.
-The public API (`submit` / `cancel` / `modify` / `top` / `depth`) doesn't
-assume anything about the internal structure, so that rewrite is a drop-in
-replacement whenever the allocator overhead actually shows up in a profile.
+Hash-based levels simplify direct lookup and allow intrusive FIFO order queues, but best-price discovery requires a scan or an auxiliary sorted index. The per-order node recycler bounds allocations based on peak simultaneous resting orders rather than total lifetime orders, except for deliberate snapshot or other retained state.
 
 ## Order types
 
@@ -100,7 +78,7 @@ Two deliberate consequences:
   only reprices the resting order. A caller that wants "modify and let it
   match if it crosses" has to cancel and resubmit through `submit()`
   instead, which does run the matching pass. This keeps `modify()`'s cost
-  and behavior predictable (always O(1) + O(log m), never O(book depth))
+  and behavior predictable (does not invoke aggressive matching, never O(book depth))
   and matches how most venues treat this call — it's explicitly a passive
   book action, not a new aggressive order.
 
@@ -110,8 +88,8 @@ Two deliberate consequences:
 `levels` `DepthLevel{price, qty, order_count}` entries per side, best price
 first (bids high-to-low, asks low-to-high). `qty` is the sum of `remaining`
 across every resting order at that price; `order_count` is how many orders
-make up that sum. It's a plain read — O(levels) per side — built by walking
-the already-sorted `std::map`s, so it reflects exactly the state `top()`
+make up that sum. It's a plain read — O(m log m + nodes visited) per side — built by walking
+the sorted copies of the hash-map price keys, so it reflects exactly the state `top()`
 would report, just carried further into the book.
 
 This is intentionally *not* incrementally maintained (no cached depth
