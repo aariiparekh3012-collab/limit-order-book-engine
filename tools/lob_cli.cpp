@@ -1,13 +1,15 @@
+#include "lob/cli.h"
 #include "lob/exchange.h"
 #include "lob/json_sink.h"
+#include "lob/log_sanitize.h"
 
 #include <iostream>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <algorithm>
-#include <iomanip>
 #include <cstring>
+#include <cctype>
 
 // reads orders from a CSV and prints the resulting trade log.
 // csv format: id,symbol,side,type,price,qty[,trader_id]
@@ -15,35 +17,24 @@
 // modify lines: MODIFY,<order_id>,<new_price>,<new_qty>
 // usage: ./lob_cli [--json] [--stp newest|oldest|both] [--depth N] <orders.csv | ->
 
-static std::string sanitize_for_log(const std::string& input) {
-    std::string out;
-    out.reserve(input.size());
-    for (unsigned char ch : input) {
-        if (ch == '\n' || ch == '\r' || ch == '\t' || ch == '\0') {
-            out.push_back(' ');
-        } else if (ch < 0x20 || ch == 0x7f) {
-            out.push_back(' ');
-        } else {
-            out.push_back(static_cast<char>(ch));
-        }
-    }
-    return out;
-}
-
 class PrintSink : public lob::EventSink {
 public:
+    explicit PrintSink(std::ostream& out) : out_(out) {}
+
     void on_event(const lob::Event& event) override {
-        std::visit([](const auto& e) { print(e); }, event);
+        std::visit([this](const auto& e) { print(e); }, event);
     }
 private:
-    static void print(const lob::Ack& e)       { std::cout << "  ACK        id=" << e.order_id << "\n"; }
-    static void print(const lob::Trade& e)     { std::cout << "  TRADE      agg=" << e.aggressor_id << " rest=" << e.resting_id << " px=" << e.price << " qty=" << e.qty << "\n"; }
-    static void print(const lob::Filled& e)    { std::cout << "  FILLED     id=" << e.order_id << "\n"; }
-    static void print(const lob::Partial& e)   { std::cout << "  PARTIAL    id=" << e.order_id << " rem=" << e.remaining << "\n"; }
-    static void print(const lob::CancelAck& e) { std::cout << "  CANCEL_ACK id=" << e.order_id << "\n"; }
-    static void print(const lob::Reject& e)    { std::cout << "  REJECT     id=" << e.order_id << " \"" << sanitize_for_log(e.reason) << "\"\n"; }
-    static void print(const lob::STPCancel& e) { std::cout << "  STP_CANCEL agg=" << e.aggressor_id << " rest=" << e.resting_id << " mode=" << lob::to_string(e.mode) << "\n"; }
-    static void print(const lob::ModifyAck& e) { std::cout << "  MODIFY_ACK id=" << e.order_id << " px=" << e.new_price << " qty=" << e.new_qty << "\n"; }
+    std::ostream& out_;
+
+    void print(const lob::Ack& e)       { out_ << "  ACK        id=" << e.order_id << "\n"; }
+    void print(const lob::Trade& e)     { out_ << "  TRADE      agg=" << e.aggressor_id << " rest=" << e.resting_id << " px=" << e.price << " qty=" << e.qty << "\n"; }
+    void print(const lob::Filled& e)    { out_ << "  FILLED     id=" << e.order_id << "\n"; }
+    void print(const lob::Partial& e)   { out_ << "  PARTIAL    id=" << e.order_id << " rem=" << e.remaining << "\n"; }
+    void print(const lob::CancelAck& e) { out_ << "  CANCEL_ACK id=" << e.order_id << "\n"; }
+    void print(const lob::Reject& e)    { out_ << "  REJECT     id=" << e.order_id << " \"" << lob::sanitize_for_log(e.reason) << "\"\n"; }
+    void print(const lob::STPCancel& e) { out_ << "  STP_CANCEL agg=" << e.aggressor_id << " rest=" << e.resting_id << " mode=" << lob::to_string(e.mode) << "\n"; }
+    void print(const lob::ModifyAck& e) { out_ << "  MODIFY_ACK id=" << e.order_id << " px=" << e.new_price << " qty=" << e.new_qty << "\n"; }
 };
 
 static std::string trim(const std::string& s) {
@@ -53,7 +44,9 @@ static std::string trim(const std::string& s) {
 }
 
 static std::string upper(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(), ::toupper);
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::toupper(ch));
+    });
     return s;
 }
 
@@ -81,35 +74,37 @@ static lob::STPMode parse_stp(const char* s) {
     throw std::runtime_error("unknown STP mode: " + std::string(s) + " (use newest, oldest, or both)");
 }
 
-static void show_tob(const lob::Exchange& ex, const std::string& sym) {
+static void show_tob(const lob::Exchange& ex, const std::string& sym,
+                     std::ostream& out) {
     auto tob = ex.top(sym);
-    std::cout << "  [" << sanitize_for_log(sym) << "] ";
-    if (tob.best_bid) std::cout << "bid=" << *tob.best_bid << "x" << tob.bid_qty;
-    else              std::cout << "bid=---";
-    std::cout << " | ";
-    if (tob.best_ask) std::cout << "ask=" << *tob.best_ask << "x" << tob.ask_qty;
-    else              std::cout << "ask=---";
-    std::cout << "\n";
+    out << "  [" << lob::sanitize_for_log(sym) << "] ";
+    if (tob.best_bid) out << "bid=" << *tob.best_bid << "x" << tob.bid_qty;
+    else              out << "bid=---";
+    out << " | ";
+    if (tob.best_ask) out << "ask=" << *tob.best_ask << "x" << tob.ask_qty;
+    else              out << "ask=---";
+    out << "\n";
 }
 
-static void show_depth(const lob::Exchange& ex, const std::string& sym, int levels) {
+static void show_depth(const lob::Exchange& ex, const std::string& sym, int levels,
+                       std::ostream& out) {
     auto d = ex.depth(sym, levels);
-    std::cout << "  depth [" << sanitize_for_log(sym) << "]\n";
+    out << "  depth [" << lob::sanitize_for_log(sym) << "]\n";
     size_t n = std::max(d.bids.size(), d.asks.size());
     for (size_t i = 0; i < n; ++i) {
-        std::cout << "    ";
+        out << "    ";
         if (i < d.bids.size())
-            std::cout << "BID " << d.bids[i].price << " x" << d.bids[i].qty
-                      << " (" << d.bids[i].order_count << ")";
+            out << "BID " << d.bids.at(i).price << " x" << d.bids.at(i).qty
+                << " (" << d.bids.at(i).order_count << ")";
         else
-            std::cout << "BID ---";
-        std::cout << "   |   ";
+            out << "BID ---";
+        out << "   |   ";
         if (i < d.asks.size())
-            std::cout << "ASK " << d.asks[i].price << " x" << d.asks[i].qty
-                      << " (" << d.asks[i].order_count << ")";
+            out << "ASK " << d.asks.at(i).price << " x" << d.asks.at(i).qty
+                << " (" << d.asks.at(i).order_count << ")";
         else
-            std::cout << "ASK ---";
-        std::cout << "\n";
+            out << "ASK ---";
+        out << "\n";
     }
 }
 
@@ -131,10 +126,21 @@ int run_cli(int argc, char* argv[], std::istream& in, std::ostream& out, std::os
             json_mode = true;
         } else if (std::strcmp(argv[i], "--stp") == 0) {
             if (i + 1 >= argc) { err << "--stp needs an argument\n"; return 1; }
-            stp_mode = parse_stp(argv[++i]);
+            try {
+                stp_mode = parse_stp(argv[++i]);
+            } catch (const std::exception& e) {
+                err << lob::sanitize_for_log(e.what()) << "\n";
+                return 1;
+            }
         } else if (std::strcmp(argv[i], "--depth") == 0) {
             if (i + 1 >= argc) { err << "--depth needs an argument\n"; return 1; }
-            depth_levels = std::stoi(argv[++i]);
+            try {
+                depth_levels = std::stoi(argv[++i]);
+                if (depth_levels < 0) throw std::invalid_argument("negative depth");
+            } catch (const std::exception&) {
+                err << "--depth requires a non-negative integer\n";
+                return 1;
+            }
         } else {
             filepath = argv[i];
         }
@@ -149,12 +155,12 @@ int run_cli(int argc, char* argv[], std::istream& in, std::ostream& out, std::os
     std::istream* input = &in;
     if (std::string(filepath) != "-") {
         file.open(filepath);
-        if (!file) { err << "can't open " << sanitize_for_log(filepath) << "\n"; return 1; }
+        if (!file) { err << "can't open " << lob::sanitize_for_log(filepath) << "\n"; return 1; }
         input = &file;
     }
 
     lob::Exchange exchange(stp_mode);
-    PrintSink print_sink;
+    PrintSink print_sink(out);
     lob::JsonSink json_sink(out);
     lob::EventSink& sink = json_mode
         ? static_cast<lob::EventSink&>(json_sink)
@@ -170,7 +176,7 @@ int run_cli(int argc, char* argv[], std::istream& in, std::ostream& out, std::os
     while (std::getline(*input, line)) {
         ++lineno;
         line = trim(line);
-        if (line.empty() || line[0] == '#') continue;
+        if (line.empty() || line.front() == '#') continue;
         if (upper(line).find("ID,") == 0) continue;
 
         std::istringstream ss(line);
@@ -179,50 +185,50 @@ int run_cli(int argc, char* argv[], std::istream& in, std::ostream& out, std::os
         while (std::getline(ss, tok, ',')) f.push_back(trim(tok));
         if (f.empty()) continue;
 
-        if (upper(f[0]) == "CANCEL") {
-            if (f.size() < 2) { err << lineno << ": cancel needs id\n"; continue; }
-            auto cid = std::stoull(f[1]);
-            if (!json_mode) out << "CANCEL " << cid << "\n";
-            exchange.cancel(cid, sink);
-            if (!json_mode) out << "\n";
-            continue;
-        }
-
-        if (upper(f[0]) == "MODIFY") {
-            if (f.size() < 4) { err << lineno << ": modify needs id,new_price,new_qty\n"; continue; }
-            auto mid       = std::stoull(f[1]);
-            auto new_price = std::stoll(f[2]);
-            auto new_qty   = std::stoll(f[3]);
-            if (!json_mode) out << "MODIFY " << mid << " px=" << new_price << " qty=" << new_qty << "\n";
-            exchange.modify(mid, new_price, new_qty, sink);
-            if (!json_mode) out << "\n";
-            continue;
-        }
-
-        if (f.size() < 6) { err << lineno << ": need 6 fields\n"; continue; }
-
         try {
+            if (upper(f.at(0)) == "CANCEL") {
+                if (f.size() < 2) { err << lineno << ": cancel needs id\n"; continue; }
+                auto cid = std::stoull(f.at(1));
+                if (!json_mode) out << "CANCEL " << cid << "\n";
+                exchange.cancel(cid, sink);
+                if (!json_mode) out << "\n";
+                continue;
+            }
+
+            if (upper(f.at(0)) == "MODIFY") {
+                if (f.size() < 4) { err << lineno << ": modify needs id,new_price,new_qty\n"; continue; }
+                auto mid       = std::stoull(f.at(1));
+                auto new_price = std::stoll(f.at(2));
+                auto new_qty   = std::stoll(f.at(3));
+                if (!json_mode) out << "MODIFY " << mid << " px=" << new_price << " qty=" << new_qty << "\n";
+                exchange.modify(mid, new_price, new_qty, sink);
+                if (!json_mode) out << "\n";
+                continue;
+            }
+
+            if (f.size() < 6) { err << lineno << ": need 6 fields\n"; continue; }
+
             lob::Order o;
-            o.id     = std::stoull(f[0]);
-            o.symbol = trim(f[1]);
-            o.side   = parse_side(f[2]);
-            o.type   = parse_type(f[3]);
-            o.price  = std::stoll(f[4]);
-            o.qty    = std::stoll(f[5]);
+            o.id     = std::stoull(f.at(0));
+            o.symbol = trim(f.at(1));
+            o.side   = parse_side(f.at(2));
+            o.type   = parse_type(f.at(3));
+            o.price  = std::stoll(f.at(4));
+            o.qty    = std::stoll(f.at(5));
             o.ts     = ++ts;
 
-            if (f.size() >= 7 && !f[6].empty())
-                o.trader_id = std::stoull(f[6]);
+            if (f.size() >= 7 && !f.at(6).empty())
+                o.trader_id = std::stoull(f.at(6));
 
             if (!exchange.has_symbol(o.symbol)) {
                 exchange.add_symbol(o.symbol);
                 if (!json_mode)
-                    out << "-- new symbol: " << sanitize_for_log(o.symbol) << " --\n";
+                    out << "-- new symbol: " << lob::sanitize_for_log(o.symbol) << " --\n";
             }
 
             if (!json_mode) {
                 out << lob::to_string(o.type) << " " << lob::to_string(o.side)
-                    << " " << sanitize_for_log(o.symbol) << " id=" << o.id
+                    << " " << lob::sanitize_for_log(o.symbol) << " id=" << o.id
                     << " px=" << o.price << " qty=" << o.qty;
                 if (o.trader_id != 0) out << " trader=" << o.trader_id;
                 out << "\n";
@@ -231,12 +237,12 @@ int run_cli(int argc, char* argv[], std::istream& in, std::ostream& out, std::os
             exchange.submit(o, sink);
 
             if (!json_mode) {
-                show_tob(exchange, o.symbol);
-                if (depth_levels > 0) show_depth(exchange, o.symbol, depth_levels);
+                show_tob(exchange, o.symbol, out);
+                if (depth_levels > 0) show_depth(exchange, o.symbol, depth_levels, out);
                 out << "\n";
             }
         } catch (const std::exception& e) {
-            err << lineno << ": " << sanitize_for_log(e.what()) << "\n";
+            err << lineno << ": " << lob::sanitize_for_log(e.what()) << "\n";
         }
     }
 
@@ -247,17 +253,6 @@ int run_cli(int argc, char* argv[], std::istream& in, std::ostream& out, std::os
 
 #ifndef LOB_DISABLE_MAIN
 int main(int argc, char* argv[]) {
-    std::istream* in = &std::cin;
-    std::ifstream file;
-    std::string filepath = argc >= 2 ? argv[argc - 1] : "";
-    if (argc >= 2 && std::string(filepath) != "-") {
-        file.open(filepath);
-        if (!file) {
-            std::cerr << "can't open " << sanitize_for_log(filepath) << "\n";
-            return 1;
-        }
-        in = &file;
-    }
-    return lob::cli::run_cli(argc, argv, *in, std::cout, std::cerr);
+    return lob::cli::run_cli(argc, argv, std::cin, std::cout, std::cerr);
 }
 #endif

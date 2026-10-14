@@ -49,7 +49,7 @@ public:
         it->second->submit(order, sink);
 
         if (it->second->contains(order.id)) {
-            order_index_[order.id] = it->second.get();
+            order_index_.insert_or_assign(order.id, it->second.get());
         } else {
             order_index_.erase(order.id);
         }
@@ -132,7 +132,7 @@ private:
 
         for (auto& [_, book] : books_) {
             if (book->contains(id)) {
-                order_index_[id] = book.get();
+                order_index_.insert_or_assign(id, book.get());
                 return book.get();
             }
         }

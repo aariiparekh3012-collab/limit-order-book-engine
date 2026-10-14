@@ -37,7 +37,7 @@ PriceLevel* Book::get_or_create_level(Price p, Side side) {
     auto level = std::make_unique<PriceLevel>();
     level->price = p;
     PriceLevel* ptr = level.get();
-    levels[p] = std::move(level);
+    levels.emplace(p, std::move(level));
     return ptr;
 }
 
@@ -193,7 +193,7 @@ void Book::modify(OrderId id, Price new_price, Qty new_qty, EventSink& sink) {
 
     PriceLevel* level = get_or_create_level(new_price, side);
     level->add_order(order);
-    order_index_[id] = order;
+    order_index_.insert_or_assign(id, order);
 
     sink.on_event(ModifyAck{id, new_price, new_qty});
 }
@@ -423,7 +423,7 @@ void Book::place_on_book(const Order& order, Qty remaining) {
 
     PriceLevel* level = get_or_create_level(order.price, order.side);
     level->add_order(ro);
-    order_index_[order.id] = ro;
+    order_index_.insert_or_assign(order.id, ro);
 }
 
 void Book::remove_order(RestingOrder* order, Side side, bool recycle) {
@@ -483,7 +483,7 @@ void Book::restore_order(const RestingOrder& ro) {
 
     PriceLevel* level = get_or_create_level(ro.price, ro.side);
     level->add_order(order);
-    order_index_[ro.id] = order;
+    order_index_.insert_or_assign(ro.id, order);
 }
 
 } // namespace lob
