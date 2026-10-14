@@ -1,4 +1,6 @@
 #include "lob/cli.h"
+#include "lob/json_sink.h"
+#include "lob/log_sanitize.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -113,6 +115,10 @@ TEST_CASE("CLI supports all STP modes", "[cli][stp]") {
     REQUIRE(newest.code == 0);
     REQUIRE(newest.out.find("CANCEL_NEWEST") != std::string::npos);
 
+    auto newest_alias = run({"lob_cli", "--stp", "cancel_newest", "-"}, self_cross);
+    REQUIRE(newest_alias.code == 0);
+    REQUIRE(newest_alias.out.find("CANCEL_NEWEST") != std::string::npos);
+
     auto oldest = run({"lob_cli", "--stp", "cancel_oldest", "-"}, self_cross);
     REQUIRE(oldest.code == 0);
     REQUIRE(oldest.out.find("CANCEL_OLDEST") != std::string::npos);
@@ -120,6 +126,36 @@ TEST_CASE("CLI supports all STP modes", "[cli][stp]") {
     auto both = run({"lob_cli", "--stp", "both", "-"}, self_cross);
     REQUIRE(both.code == 0);
     REQUIRE(both.out.find("CANCEL_BOTH") != std::string::npos);
+
+    auto both_alias = run({"lob_cli", "--stp", "cancel_both", "-"}, self_cross);
+    REQUIRE(both_alias.code == 0);
+    REQUIRE(both_alias.out.find("CANCEL_BOTH") != std::string::npos);
+
+    auto oldest_alias = run({"lob_cli", "--stp", "oldest", "-"}, self_cross);
+    REQUIRE(oldest_alias.code == 0);
+    REQUIRE(oldest_alias.out.find("CANCEL_OLDEST") != std::string::npos);
+
+    auto json = run({"lob_cli", "--json", "--stp", "newest", "-"}, self_cross);
+    REQUIRE(json.code == 0);
+    REQUIRE(json.out.find("\"event\":\"STP_CANCEL\"") != std::string::npos);
+}
+
+TEST_CASE("CLI accepts compact order aliases and an empty trader field", "[cli]") {
+    const std::string csv =
+        "   \n"
+        "1,ABC,BUY,LMT,100,1,\n"
+        "2,ABC,SELL,M,0,1\n"
+        "3,DEF,BUY,FOK,100,1\n"
+        "4,GHI,BUY,LIMIT,100,1\n"
+        "5,GHI,SELL,MARKET,0,1\n";
+
+    auto result = run({"lob_cli", "-"}, csv);
+    REQUIRE(result.code == 0);
+    REQUIRE(result.err.empty());
+    REQUIRE(result.out.find("LIMIT BUY ABC id=1") != std::string::npos);
+    REQUIRE(result.out.find("MARKET SELL ABC id=2") != std::string::npos);
+    REQUIRE(result.out.find("FOK BUY DEF id=3") != std::string::npos);
+    REQUIRE(result.out.find("MARKET SELL GHI id=5") != std::string::npos);
 }
 
 TEST_CASE("CLI reports malformed rows and sanitizes control characters", "[cli]") {
@@ -160,4 +196,18 @@ TEST_CASE("CLI reads a named file and reports a missing file", "[cli][file]") {
     auto missing = run({"lob_cli", path.string()});
     REQUIRE(missing.code == 1);
     REQUIRE(missing.err.find("can't open") != std::string::npos);
+}
+
+TEST_CASE("JSON and plain-text logging escape untrusted text", "[cli][logging]") {
+    std::ostringstream json;
+    lob::JsonSink sink(json);
+    sink.on_event(lob::Reject{7, "quote\" slash\\ line\nreturn\rtab\t"});
+
+    REQUIRE(json.str() ==
+            "{\"event\":\"REJECT\",\"order_id\":7,\"reason\":"
+            "\"quote\\\" slash\\\\ line\\nreturn\\rtab\\t\"}\n");
+
+    const std::string unsafe{'A', '\n', 'B', '\r', 'C', '\t', 'D', '\0',
+                             'E', '\x01', 'F', '\x7f', 'G'};
+    REQUIRE(lob::sanitize_for_log(unsafe) == "A B C D E F G");
 }
