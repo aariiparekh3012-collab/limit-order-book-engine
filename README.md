@@ -1,5 +1,7 @@
 # Limit Order Book Engine
 
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/aariiparekh3012-collab/badge.svg)](https://hub.xerj.org/contributors/aariiparekh3012-collab)
+
 [![CI](https://github.com/aariiparekh3012-collab/limit-order-book-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/aariiparekh3012-collab/limit-order-book-engine/actions/workflows/ci.yml)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=aariiparekh3012-collab_limit-order-book-engine&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=aariiparekh3012-collab_limit-order-book-engine)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://en.cppreference.com/w/cpp/17)
