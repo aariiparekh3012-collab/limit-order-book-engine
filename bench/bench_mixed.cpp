@@ -60,30 +60,30 @@ public:
     }
 
     void remove(OrderId id) {
-        const auto found = index_.find(id);
-        if (found == index_.end()) return;
-        const std::size_t index = found->second;
-        const OrderId last = ids_.back();
-        ids_[index] = last;
-        index_[last] = index;
+        auto it = index_.find(id);
+        if (it == index_.end()) return; // already gone (e.g. filled twice in one call)
+        size_t idx = it->second;
+        OrderId last = ids_.back();
+        ids_[idx] = last;
+        index_[last] = idx;
         ids_.pop_back();
-        index_.erase(found);
+        index_.erase(it);
         price_.erase(id);
     }
 
-    void set_price(OrderId id, Price price) { price_[id] = price; }
+    void set_price(OrderId id, Price p) { price_[id] = p; }
     Price price_of(OrderId id) const { return price_.at(id); }
     bool empty() const { return ids_.empty(); }
 
     template<typename Rng>
     OrderId random_id(Rng& rng) const {
-        std::uniform_int_distribution<std::size_t> distribution(0, ids_.size() - 1);
-        return ids_[distribution(rng)];
+        std::uniform_int_distribution<size_t> d(0, ids_.size() - 1);
+        return ids_[d(rng)];
     }
 
 private:
     std::vector<OrderId> ids_;
-    std::unordered_map<OrderId, std::size_t> index_;
+    std::unordered_map<OrderId, size_t> index_;
     std::unordered_map<OrderId, Price> price_;
 };
 
