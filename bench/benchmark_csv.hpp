@@ -11,6 +11,32 @@
 
 namespace lob_bench {
 
+enum class OutputFormat { Human, Csv };
+
+struct CommandLineOptions {
+    OutputFormat format = OutputFormat::Human;
+    bool should_run = true;
+    int exit_code = 0;
+};
+
+inline CommandLineOptions parse_options(
+    int argc, char* argv[], std::ostream& output, std::ostream& errors) {
+
+    if (argc == 1) return {};
+
+    const std::string argument = argv[1];
+    if (argc == 2 && argument == "--csv") {
+        return {OutputFormat::Csv, true, 0};
+    }
+    if (argc == 2 && (argument == "--help" || argument == "-h")) {
+        output << "Usage: " << argv[0] << " [--csv]\n";
+        return {OutputFormat::Human, false, 0};
+    }
+
+    errors << "Usage: " << argv[0] << " [--csv]\n";
+    return {OutputFormat::Human, false, 2};
+}
+
 struct LatencySummary {
     std::size_t samples = 0;
     std::int64_t p50_ns = 0;
@@ -44,6 +70,18 @@ inline LatencySummary summarize(const std::vector<std::int64_t>& samples) {
     return result;
 }
 
+struct CsvRow {
+    std::string benchmark;
+    std::string operation;
+    std::size_t samples = 0;
+    std::size_t warmup_operations = 0;
+    std::optional<LatencySummary> latency;
+    std::optional<double> throughput;
+    std::optional<double> wall_seconds;
+    std::uint32_t random_seed = 0;
+    std::optional<std::size_t> final_resting_orders;
+};
+
 inline void write_csv_field(std::ostream& out, const std::string& value) {
     out << '"';
     for (const char ch : value) {
@@ -59,39 +97,28 @@ inline void write_csv_header(std::ostream& out) {
            "throughput_ops_per_second,wall_seconds,random_seed,final_resting_orders\n";
 }
 
-inline void write_csv_row(
-    std::ostream& out,
-    const std::string& benchmark,
-    const std::string& operation,
-    std::size_t samples,
-    std::size_t warmup_operations,
-    const std::optional<LatencySummary>& latency,
-    const std::optional<double>& throughput,
-    const std::optional<double>& wall_seconds,
-    std::uint32_t random_seed,
-    const std::optional<std::size_t>& final_resting_orders = std::nullopt) {
-
+inline void write_csv_row(std::ostream& out, const CsvRow& row) {
     out << "1,";
-    write_csv_field(out, benchmark);
+    write_csv_field(out, row.benchmark);
     out << ',';
-    write_csv_field(out, operation);
-    out << ',' << samples << ',' << warmup_operations << ',';
+    write_csv_field(out, row.operation);
+    out << ',' << row.samples << ',' << row.warmup_operations << ',';
 
-    if (latency) {
-        out << latency->p50_ns << ',' << latency->p90_ns << ','
-            << latency->p99_ns << ',' << latency->p999_ns << ','
-            << latency->max_ns << ',' << std::fixed << std::setprecision(3)
-            << latency->mean_ns;
+    if (row.latency) {
+        out << row.latency->p50_ns << ',' << row.latency->p90_ns << ','
+            << row.latency->p99_ns << ',' << row.latency->p999_ns << ','
+            << row.latency->max_ns << ',' << std::fixed << std::setprecision(3)
+            << row.latency->mean_ns;
     } else {
         out << ",,,,,";
     }
 
     out << ',';
-    if (throughput) out << std::fixed << std::setprecision(3) << *throughput;
+    if (row.throughput) out << std::fixed << std::setprecision(3) << *row.throughput;
     out << ',';
-    if (wall_seconds) out << std::fixed << std::setprecision(9) << *wall_seconds;
-    out << ',' << random_seed << ',';
-    if (final_resting_orders) out << *final_resting_orders;
+    if (row.wall_seconds) out << std::fixed << std::setprecision(9) << *row.wall_seconds;
+    out << ',' << row.random_seed << ',';
+    if (row.final_resting_orders) out << *row.final_resting_orders;
     out << '\n';
 }
 

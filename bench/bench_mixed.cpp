@@ -1,48 +1,40 @@
-// mixed-workload benchmark: submits, cancels, and modifies interleaved,
-// approximating a realistic market-making / retail order flow instead of
-// bench_submit's pure-insertion workload.
-//
-// workload mix (by operation count):
-//   60% limit submits  — 50/50 buy/sell, price clustered around a mid
-//   25% cancels        — of a randomly chosen currently-resting order
-//   15% modifies        — price +/- 1..3 ticks, fresh random qty
-//
-// 10k warmup ops (untimed) followed by 1M measured ops. latency is reported
-// separately per operation type (each op type only competes against the
-// same book state a real gateway would see), plus one aggregate throughput
-// number across all operation types combined.
+// Mixed-workload benchmark: 60% submits, 25% cancels, and 15% modifies.
+// A 10k-operation warmup precedes 1M measured operations.
 
 #include "lob/book.h"
-#include "benchmark_csv.h"
+#include "benchmark_csv.hpp"
 
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
-#include <random>
-#include <vector>
-#include <unordered_map>
-#include <iostream>
 #include <iomanip>
-#include <string>
+#include <iostream>
+#include <random>
+#include <unordered_map>
+#include <utility>
 #include <variant>
+#include <vector>
 
 using namespace lob;
 
 namespace {
+
+using Clock = std::chrono::steady_clock;
+
+constexpr int WARMUP = 10'000;
+constexpr int MEASURED = 1'000'000;
+constexpr Price MID = 1000;
+constexpr std::uint32_t RANDOM_SEED = 1234;
 
 class NullSink : public EventSink {
 public:
     void on_event(const Event&) override {}
 };
 
-// tracks which submitted order ended up filled, and which resting
-// counterparty orders got filled as a side effect, so the benchmark driver
-// can keep its "currently resting" order-id pool accurate without paying
-// for a full VectorSink allocation on every call.
 class TrackingSink : public EventSink {
 public:
-    OrderId watched_id      = 0;
-    bool    watched_filled  = false;
+    OrderId watched_id = 0;
+    bool watched_filled = false;
     std::vector<OrderId> other_filled;
 
     void reset(OrderId id) {
@@ -51,17 +43,14 @@ public:
         other_filled.clear();
     }
 
-    void on_event(const Event& e) override {
-        if (auto* f = std::get_if<Filled>(&e)) {
-            if (f->order_id == watched_id) watched_filled = true;
-            else other_filled.push_back(f->order_id);
+    void on_event(const Event& event) override {
+        if (const auto* fill = std::get_if<Filled>(&event)) {
+            if (fill->order_id == watched_id) watched_filled = true;
+            else other_filled.push_back(fill->order_id);
         }
     }
 };
 
-// O(1) add/remove/pick-random pool of currently-resting order ids, with
-// their last-known price (needed so "modify" can nudge relative to the
-// order's own price rather than an arbitrary one).
 class LivePool {
 public:
     void add(OrderId id, Price price) {
@@ -71,213 +60,202 @@ public:
     }
 
     void remove(OrderId id) {
-        auto it = index_.find(id);
-        if (it == index_.end()) return; // already gone (e.g. filled twice in one call)
-        size_t idx = it->second;
-        OrderId last = ids_.back();
-        ids_[idx] = last;
-        index_[last] = idx;
+        const auto found = index_.find(id);
+        if (found == index_.end()) return;
+        const std::size_t index = found->second;
+        const OrderId last = ids_.back();
+        ids_[index] = last;
+        index_[last] = index;
         ids_.pop_back();
-        index_.erase(it);
+        index_.erase(found);
         price_.erase(id);
     }
 
-    void set_price(OrderId id, Price p) { price_[id] = p; }
+    void set_price(OrderId id, Price price) { price_[id] = price; }
     Price price_of(OrderId id) const { return price_.at(id); }
-
     bool empty() const { return ids_.empty(); }
-    size_t size() const { return ids_.size(); }
 
     template<typename Rng>
     OrderId random_id(Rng& rng) const {
-        std::uniform_int_distribution<size_t> d(0, ids_.size() - 1);
-        return ids_[d(rng)];
+        std::uniform_int_distribution<std::size_t> distribution(0, ids_.size() - 1);
+        return ids_[distribution(rng)];
     }
 
 private:
     std::vector<OrderId> ids_;
-    std::unordered_map<OrderId, size_t> index_;
-    std::unordered_map<OrderId, Price>  price_;
+    std::unordered_map<OrderId, std::size_t> index_;
+    std::unordered_map<OrderId, Price> price_;
 };
 
 enum class OpType { Submit, Cancel, Modify };
 
-struct LatencyStats {
-    std::vector<int64_t> samples;
-
-    void record(int64_t ns) { samples.push_back(ns); }
-
-    lob_bench::LatencySummary summary() const {
-        return lob_bench::summarize(samples);
-    }
-
-    void report(const char* label) const {
-        if (samples.empty()) {
-            std::cout << "  " << label << ": (no samples)\n";
-            return;
-        }
-        const auto stats = summary();
-
-        std::cout << "  " << label << " (n=" << stats.samples << ")\n";
-        std::cout << "    p50: " << stats.p50_ns << " ns   "
-                   << "p90: " << stats.p90_ns << " ns   "
-                   << "p99: " << stats.p99_ns << " ns   "
-                   << "p99.9: " << stats.p999_ns << " ns   "
-                   << "max: " << stats.max_ns << " ns   "
-                   << "avg: " << static_cast<int64_t>(stats.mean_ns) << " ns\n";
-    }
+struct MixedResult {
+    lob_bench::LatencySummary submit;
+    lob_bench::LatencySummary cancel;
+    lob_bench::LatencySummary modify;
+    double wall_seconds = 0.0;
+    std::size_t final_resting_orders = 0;
 };
+
+class MixedBenchmark {
+public:
+    MixedResult run() {
+        for (int i = 0; i < WARMUP; ++i) run_one();
+
+        std::vector<std::int64_t> submit_latencies;
+        std::vector<std::int64_t> cancel_latencies;
+        std::vector<std::int64_t> modify_latencies;
+        submit_latencies.reserve(MEASURED * 60 / 100);
+        cancel_latencies.reserve(MEASURED * 25 / 100);
+        modify_latencies.reserve(MEASURED * 15 / 100);
+
+        const auto start = Clock::now();
+        for (int i = 0; i < MEASURED; ++i) {
+            const auto [type, latency] = run_one();
+            if (type == OpType::Submit) submit_latencies.push_back(latency);
+            else if (type == OpType::Cancel) cancel_latencies.push_back(latency);
+            else modify_latencies.push_back(latency);
+        }
+        const auto end = Clock::now();
+
+        return {
+            lob_bench::summarize(submit_latencies),
+            lob_bench::summarize(cancel_latencies),
+            lob_bench::summarize(modify_latencies),
+            std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count(),
+            book_.order_count()};
+    }
+
+private:
+    std::int64_t submit() {
+        Order order;
+        order.id = next_id_++;
+        order.side = side_dist_(rng_) ? Side::Buy : Side::Sell;
+        order.price = MID + price_jitter_(rng_);
+        if (order.price <= 0) order.price = MID;
+        order.qty = qty_dist_(rng_);
+        order.ts = next_ts_++;
+        order.type = OrderType::Limit;
+
+        tracking_sink_.reset(order.id);
+        const auto start = Clock::now();
+        book_.submit(order, tracking_sink_);
+        const auto end = Clock::now();
+
+        for (const auto id : tracking_sink_.other_filled) live_.remove(id);
+        if (!tracking_sink_.watched_filled) live_.add(order.id, order.price);
+        return elapsed_ns(start, end);
+    }
+
+    std::int64_t cancel() {
+        const OrderId id = live_.random_id(rng_);
+        const auto start = Clock::now();
+        book_.cancel(id, null_sink_);
+        const auto end = Clock::now();
+        live_.remove(id);
+        return elapsed_ns(start, end);
+    }
+
+    std::int64_t modify() {
+        const OrderId id = live_.random_id(rng_);
+        const Price old_price = live_.price_of(id);
+        const int delta = tick_delta_(rng_) * (tick_sign_(rng_) ? 1 : -1);
+        Price new_price = old_price + delta;
+        if (new_price <= 0) new_price = old_price + std::abs(delta);
+        const Qty new_qty = qty_dist_(rng_);
+
+        const auto start = Clock::now();
+        book_.modify(id, new_price, new_qty, null_sink_);
+        const auto end = Clock::now();
+        live_.set_price(id, new_price);
+        return elapsed_ns(start, end);
+    }
+
+    std::pair<OpType, std::int64_t> run_one() {
+        OpType type = static_cast<OpType>(op_dist_(rng_));
+        if (live_.empty() && type != OpType::Submit) type = OpType::Submit;
+
+        switch (type) {
+            case OpType::Submit: return {type, submit()};
+            case OpType::Cancel: return {type, cancel()};
+            case OpType::Modify: return {type, modify()};
+        }
+        return {OpType::Submit, 0};
+    }
+
+    static std::int64_t elapsed_ns(Clock::time_point start, Clock::time_point end) {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+    }
+
+    std::mt19937 rng_{RANDOM_SEED}; // NOSONAR — deterministic benchmark input, not security-sensitive
+    std::uniform_int_distribution<Price> price_jitter_{-10, 10};
+    std::uniform_int_distribution<Qty> qty_dist_{1, 100};
+    std::bernoulli_distribution side_dist_{0.5};
+    std::uniform_int_distribution<int> tick_delta_{1, 3};
+    std::bernoulli_distribution tick_sign_{0.5};
+    std::discrete_distribution<int> op_dist_{0.60, 0.25, 0.15};
+    Book book_;
+    NullSink null_sink_;
+    TrackingSink tracking_sink_;
+    LivePool live_;
+    OrderId next_id_ = 1;
+    Timestamp next_ts_ = 1;
+};
+
+void report_latency(const char* label, const lob_bench::LatencySummary& stats) {
+    std::cout << "  " << label << " (n=" << stats.samples << ")\n";
+    std::cout << "    p50: " << stats.p50_ns << " ns   "
+              << "p90: " << stats.p90_ns << " ns   "
+              << "p99: " << stats.p99_ns << " ns   "
+              << "p99.9: " << stats.p999_ns << " ns   "
+              << "max: " << stats.max_ns << " ns   "
+              << "avg: " << static_cast<std::int64_t>(stats.mean_ns) << " ns\n";
+}
+
+void report_csv(const MixedResult& result) {
+    lob_bench::write_csv_header(std::cout);
+    lob_bench::write_csv_row(std::cout, {
+        "mixed", "submit", result.submit.samples, WARMUP, result.submit,
+        std::nullopt, std::nullopt, RANDOM_SEED, std::nullopt});
+    lob_bench::write_csv_row(std::cout, {
+        "mixed", "cancel", result.cancel.samples, WARMUP, result.cancel,
+        std::nullopt, std::nullopt, RANDOM_SEED, std::nullopt});
+    lob_bench::write_csv_row(std::cout, {
+        "mixed", "modify", result.modify.samples, WARMUP, result.modify,
+        std::nullopt, std::nullopt, RANDOM_SEED, std::nullopt});
+    lob_bench::write_csv_row(std::cout, {
+        "mixed", "all", MEASURED, WARMUP, std::nullopt,
+        MEASURED / result.wall_seconds, result.wall_seconds,
+        RANDOM_SEED, result.final_resting_orders});
+}
+
+void report_human(const MixedResult& result) {
+    std::cout << std::fixed << std::setprecision(1);
+    std::cout << "mixed workload benchmark (" << MEASURED << " ops, " << WARMUP << " warmup)\n";
+    std::cout << "  mix: submit=" << result.submit.samples
+              << " (" << (100.0 * result.submit.samples / MEASURED) << "%)"
+              << "  cancel=" << result.cancel.samples
+              << " (" << (100.0 * result.cancel.samples / MEASURED) << "%)"
+              << "  modify=" << result.modify.samples
+              << " (" << (100.0 * result.modify.samples / MEASURED) << "%)\n";
+    std::cout << "  final resting order count: " << result.final_resting_orders << "\n\n";
+    report_latency("SUBMIT", result.submit);
+    report_latency("CANCEL", result.cancel);
+    report_latency("MODIFY", result.modify);
+    std::cout << "\n  wall time:  " << result.wall_seconds << " s\n";
+    std::cout << std::setprecision(0);
+    std::cout << "  aggregate throughput: "
+              << (MEASURED / result.wall_seconds) << " ops/sec\n";
+}
 
 } // namespace
 
 int main(int argc, char* argv[]) {
-    using Clock = std::chrono::steady_clock;
-    using namespace std::chrono;
+    const auto options = lob_bench::parse_options(argc, argv, std::cout, std::cerr);
+    if (!options.should_run) return options.exit_code;
 
-    constexpr int WARMUP   = 10'000;
-    constexpr int MEASURED = 1'000'000;
-    constexpr Price MID    = 1000;
-    constexpr std::uint32_t RANDOM_SEED = 1234;
-
-    bool csv = false;
-    if (argc == 2 && std::string(argv[1]) == "--csv") {
-        csv = true;
-    } else if (argc == 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
-        std::cout << "Usage: " << argv[0] << " [--csv]\n";
-        return 0;
-    } else if (argc != 1) {
-        std::cerr << "Usage: " << argv[0] << " [--csv]\n";
-        return 2;
-    }
-
-    std::mt19937 rng(RANDOM_SEED); // NOSONAR — deterministic seed is intentional for reproducible benchmarks
-    std::uniform_int_distribution<Price> price_jitter(-10, 10);
-    std::uniform_int_distribution<Qty>   qty_dist(1, 100);
-    std::bernoulli_distribution          side_dist(0.5);
-    std::uniform_int_distribution<int>   tick_delta(1, 3);
-    std::bernoulli_distribution          tick_sign(0.5);
-    std::discrete_distribution<int>      op_dist({0.60, 0.25, 0.15}); // Submit, Cancel, Modify
-
-    Book book;
-    NullSink null_sink;
-    TrackingSink tracking_sink;
-    LivePool live;
-
-    OrderId next_id = 1;
-    Timestamp next_ts = 1;
-
-    auto do_submit = [&](bool timed) -> int64_t {
-        Order o;
-        o.id    = next_id++;
-        o.side  = side_dist(rng) ? Side::Buy : Side::Sell;
-        o.price = MID + price_jitter(rng);
-        if (o.price <= 0) o.price = MID;
-        o.qty   = qty_dist(rng);
-        o.ts    = next_ts++;
-        o.type  = OrderType::Limit;
-
-        tracking_sink.reset(o.id);
-
-        auto t0 = Clock::now();
-        book.submit(o, tracking_sink);
-        auto t1 = Clock::now();
-
-        for (auto id : tracking_sink.other_filled) live.remove(id);
-        if (!tracking_sink.watched_filled) live.add(o.id, o.price);
-
-        return timed ? duration_cast<nanoseconds>(t1 - t0).count() : 0;
-    };
-
-    auto do_cancel = [&](bool timed) -> int64_t {
-        OrderId id = live.random_id(rng);
-
-        auto t0 = Clock::now();
-        book.cancel(id, null_sink);
-        auto t1 = Clock::now();
-
-        live.remove(id);
-        return timed ? duration_cast<nanoseconds>(t1 - t0).count() : 0;
-    };
-
-    auto do_modify = [&](bool timed) -> int64_t {
-        OrderId id = live.random_id(rng);
-        Price old_price = live.price_of(id);
-        int delta = tick_delta(rng) * (tick_sign(rng) ? 1 : -1);
-        Price new_price = old_price + delta;
-        if (new_price <= 0) new_price = old_price + std::abs(delta);
-        Qty new_qty = qty_dist(rng);
-
-        auto t0 = Clock::now();
-        book.modify(id, new_price, new_qty, null_sink);
-        auto t1 = Clock::now();
-
-        live.set_price(id, new_price);
-        return timed ? duration_cast<nanoseconds>(t1 - t0).count() : 0;
-    };
-
-    auto run_one = [&](bool timed) -> std::pair<OpType, int64_t> {
-        OpType type = static_cast<OpType>(op_dist(rng));
-        if (live.empty() && type != OpType::Submit) type = OpType::Submit;
-
-        switch (type) {
-            case OpType::Submit: return {OpType::Submit, do_submit(timed)};
-            case OpType::Cancel: return {OpType::Cancel, do_cancel(timed)};
-            case OpType::Modify: return {OpType::Modify, do_modify(timed)};
-        }
-        return {OpType::Submit, 0};
-    };
-
-    // warmup — populate the book with a realistic resting-order pool and
-    // let the allocator settle before we start timing.
-    for (int i = 0; i < WARMUP; ++i) run_one(false);
-
-    LatencyStats submit_lat, cancel_lat, modify_lat;
-    int submit_n = 0, cancel_n = 0, modify_n = 0;
-
-    auto wall_start = Clock::now();
-    for (int i = 0; i < MEASURED; ++i) {
-        auto [type, ns] = run_one(true);
-        switch (type) {
-            case OpType::Submit: submit_lat.record(ns); ++submit_n; break;
-            case OpType::Cancel: cancel_lat.record(ns); ++cancel_n; break;
-            case OpType::Modify: modify_lat.record(ns); ++modify_n; break;
-        }
-    }
-    auto wall_end = Clock::now();
-
-    double wall_seconds = duration_cast<duration<double>>(wall_end - wall_start).count();
-
-    if (csv) {
-        lob_bench::write_csv_header(std::cout);
-        lob_bench::write_csv_row(
-            std::cout, "mixed", "submit", submit_lat.samples.size(), WARMUP,
-            submit_lat.summary(), std::nullopt, std::nullopt, RANDOM_SEED);
-        lob_bench::write_csv_row(
-            std::cout, "mixed", "cancel", cancel_lat.samples.size(), WARMUP,
-            cancel_lat.summary(), std::nullopt, std::nullopt, RANDOM_SEED);
-        lob_bench::write_csv_row(
-            std::cout, "mixed", "modify", modify_lat.samples.size(), WARMUP,
-            modify_lat.summary(), std::nullopt, std::nullopt, RANDOM_SEED);
-        lob_bench::write_csv_row(
-            std::cout, "mixed", "all", MEASURED, WARMUP, std::nullopt,
-            MEASURED / wall_seconds, wall_seconds, RANDOM_SEED, book.order_count());
-        return 0;
-    }
-
-    std::cout << std::fixed << std::setprecision(1);
-    std::cout << "mixed workload benchmark (" << MEASURED << " ops, " << WARMUP << " warmup)\n";
-    std::cout << "  mix: submit=" << submit_n << " (" << (100.0 * submit_n / MEASURED) << "%)"
-               << "  cancel=" << cancel_n << " (" << (100.0 * cancel_n / MEASURED) << "%)"
-               << "  modify=" << modify_n << " (" << (100.0 * modify_n / MEASURED) << "%)\n";
-    std::cout << "  final resting order count: " << book.order_count() << "\n\n";
-
-    submit_lat.report("SUBMIT");
-    cancel_lat.report("CANCEL");
-    modify_lat.report("MODIFY");
-
-    std::cout << "\n  wall time:  " << wall_seconds << " s\n";
-    std::cout << std::setprecision(0);
-    std::cout << "  aggregate throughput: " << (MEASURED / wall_seconds) << " ops/sec\n";
-
+    const auto result = MixedBenchmark{}.run();
+    if (options.format == lob_bench::OutputFormat::Csv) report_csv(result);
+    else report_human(result);
     return 0;
 }

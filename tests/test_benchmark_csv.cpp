@@ -1,4 +1,4 @@
-#include "benchmark_csv.h"
+#include "benchmark_csv.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -24,9 +24,9 @@ TEST_CASE("benchmark CSV has a stable header and escapes text fields") {
     const lob_bench::LatencySummary stats{2, 10, 20, 30, 40, 50, 25.5};
 
     lob_bench::write_csv_header(output);
-    lob_bench::write_csv_row(
-        output, "mixed,workload", "sub\"mit", 2, 10, stats,
-        123.25, 0.5, 42, 7);
+    lob_bench::write_csv_row(output, {
+        "mixed,workload", "sub\"mit", 2, 10, stats,
+        123.25, 0.5, 42, 7});
 
     REQUIRE(output.str() ==
         "schema_version,benchmark,operation,samples,warmup_operations,"
