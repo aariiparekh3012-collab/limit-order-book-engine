@@ -13,15 +13,17 @@
 // number across all operation types combined.
 
 #include "lob/book.h"
+#include "benchmark_csv.h"
 
 #include <chrono>
+#include <cstdint>
+#include <cstdlib>
 #include <random>
 #include <vector>
 #include <unordered_map>
-#include <algorithm>
 #include <iostream>
 #include <iomanip>
-#include <numeric>
+#include <string>
 #include <variant>
 
 using namespace lob;
@@ -105,43 +107,50 @@ struct LatencyStats {
 
     void record(int64_t ns) { samples.push_back(ns); }
 
+    lob_bench::LatencySummary summary() const {
+        return lob_bench::summarize(samples);
+    }
+
     void report(const char* label) const {
         if (samples.empty()) {
             std::cout << "  " << label << ": (no samples)\n";
             return;
         }
-        std::vector<int64_t> sorted = samples;
-        std::sort(sorted.begin(), sorted.end());
+        const auto stats = summary();
 
-        auto pct = [&](double p) -> int64_t {
-            auto idx = static_cast<size_t>(p * sorted.size());
-            return sorted[std::min(idx, sorted.size() - 1)];
-        };
-
-        int64_t total = std::accumulate(sorted.begin(), sorted.end(), int64_t{0});
-        double avg = static_cast<double>(total) / sorted.size();
-
-        std::cout << "  " << label << " (n=" << sorted.size() << ")\n";
-        std::cout << "    p50: " << pct(0.50) << " ns   "
-                   << "p90: " << pct(0.90) << " ns   "
-                   << "p99: " << pct(0.99) << " ns   "
-                   << "p99.9: " << pct(0.999) << " ns   "
-                   << "max: " << sorted.back() << " ns   "
-                   << "avg: " << static_cast<int64_t>(avg) << " ns\n";
+        std::cout << "  " << label << " (n=" << stats.samples << ")\n";
+        std::cout << "    p50: " << stats.p50_ns << " ns   "
+                   << "p90: " << stats.p90_ns << " ns   "
+                   << "p99: " << stats.p99_ns << " ns   "
+                   << "p99.9: " << stats.p999_ns << " ns   "
+                   << "max: " << stats.max_ns << " ns   "
+                   << "avg: " << static_cast<int64_t>(stats.mean_ns) << " ns\n";
     }
 };
 
 } // namespace
 
-int main() {
+int main(int argc, char* argv[]) {
     using Clock = std::chrono::steady_clock;
     using namespace std::chrono;
 
     constexpr int WARMUP   = 10'000;
     constexpr int MEASURED = 1'000'000;
     constexpr Price MID    = 1000;
+    constexpr std::uint32_t RANDOM_SEED = 1234;
 
-    std::mt19937 rng(1234); // NOSONAR — deterministic seed is intentional for reproducible benchmarks
+    bool csv = false;
+    if (argc == 2 && std::string(argv[1]) == "--csv") {
+        csv = true;
+    } else if (argc == 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
+        std::cout << "Usage: " << argv[0] << " [--csv]\n";
+        return 0;
+    } else if (argc != 1) {
+        std::cerr << "Usage: " << argv[0] << " [--csv]\n";
+        return 2;
+    }
+
+    std::mt19937 rng(RANDOM_SEED); // NOSONAR — deterministic seed is intentional for reproducible benchmarks
     std::uniform_int_distribution<Price> price_jitter(-10, 10);
     std::uniform_int_distribution<Qty>   qty_dist(1, 100);
     std::bernoulli_distribution          side_dist(0.5);
@@ -237,6 +246,23 @@ int main() {
     auto wall_end = Clock::now();
 
     double wall_seconds = duration_cast<duration<double>>(wall_end - wall_start).count();
+
+    if (csv) {
+        lob_bench::write_csv_header(std::cout);
+        lob_bench::write_csv_row(
+            std::cout, "mixed", "submit", submit_lat.samples.size(), WARMUP,
+            submit_lat.summary(), std::nullopt, std::nullopt, RANDOM_SEED);
+        lob_bench::write_csv_row(
+            std::cout, "mixed", "cancel", cancel_lat.samples.size(), WARMUP,
+            cancel_lat.summary(), std::nullopt, std::nullopt, RANDOM_SEED);
+        lob_bench::write_csv_row(
+            std::cout, "mixed", "modify", modify_lat.samples.size(), WARMUP,
+            modify_lat.summary(), std::nullopt, std::nullopt, RANDOM_SEED);
+        lob_bench::write_csv_row(
+            std::cout, "mixed", "all", MEASURED, WARMUP, std::nullopt,
+            MEASURED / wall_seconds, wall_seconds, RANDOM_SEED, book.order_count());
+        return 0;
+    }
 
     std::cout << std::fixed << std::setprecision(1);
     std::cout << "mixed workload benchmark (" << MEASURED << " ops, " << WARMUP << " warmup)\n";

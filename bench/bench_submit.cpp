@@ -1,26 +1,39 @@
 #include "lob/book.h"
+#include "benchmark_csv.h"
 
 #include <chrono>
+#include <cstdint>
 #include <random>
 #include <vector>
-#include <algorithm>
 #include <iostream>
 #include <iomanip>
-#include <numeric>
+#include <string>
 
 class NullSink : public lob::EventSink {
 public:
     void on_event(const lob::Event&) override {}
 };
 
-int main() {
+int main(int argc, char* argv[]) {
     using Clock = std::chrono::steady_clock;
     using namespace std::chrono;
 
     constexpr int WARMUP   = 10'000;
     constexpr int MEASURED = 1'000'000;
+    constexpr std::uint32_t RANDOM_SEED = 42;
 
-    std::mt19937 rng(42);
+    bool csv = false;
+    if (argc == 2 && std::string(argv[1]) == "--csv") {
+        csv = true;
+    } else if (argc == 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
+        std::cout << "Usage: " << argv[0] << " [--csv]\n";
+        return 0;
+    } else if (argc != 1) {
+        std::cerr << "Usage: " << argv[0] << " [--csv]\n";
+        return 2;
+    }
+
+    std::mt19937 rng(RANDOM_SEED);
     std::uniform_int_distribution<lob::Price> price_dist(990, 1010);
     std::uniform_int_distribution<lob::Qty>   qty_dist(1, 100);
     std::bernoulli_distribution               side_dist(0.5);
@@ -56,26 +69,27 @@ int main() {
         latencies.push_back(duration_cast<nanoseconds>(t1 - t0).count());
     }
 
-    std::sort(latencies.begin(), latencies.end());
+    const auto stats = lob_bench::summarize(latencies);
+    const double throughput = 1e9 / stats.mean_ns;
 
-    auto pct = [&](double p) -> int64_t {
-        auto idx = static_cast<size_t>(p * latencies.size());
-        return latencies[std::min(idx, latencies.size() - 1)];
-    };
-
-    int64_t total = std::accumulate(latencies.begin(), latencies.end(), int64_t{0});
-    double avg = static_cast<double>(total) / MEASURED;
+    if (csv) {
+        lob_bench::write_csv_header(std::cout);
+        lob_bench::write_csv_row(
+            std::cout, "submit", "submit", stats.samples, WARMUP,
+            stats, throughput, std::nullopt, RANDOM_SEED);
+        return 0;
+    }
 
     std::cout << std::fixed << std::setprecision(1);
     std::cout << "submit benchmark (" << MEASURED << " orders, " << WARMUP << " warmup)\n";
-    std::cout << "  p50:   " << pct(0.50)  << " ns\n";
-    std::cout << "  p90:   " << pct(0.90)  << " ns\n";
-    std::cout << "  p99:   " << pct(0.99)  << " ns\n";
-    std::cout << "  p99.9: " << pct(0.999) << " ns\n";
-    std::cout << "  max:   " << latencies.back() << " ns\n";
-    std::cout << "  avg:   " << static_cast<int64_t>(avg) << " ns\n";
+    std::cout << "  p50:   " << stats.p50_ns  << " ns\n";
+    std::cout << "  p90:   " << stats.p90_ns  << " ns\n";
+    std::cout << "  p99:   " << stats.p99_ns  << " ns\n";
+    std::cout << "  p99.9: " << stats.p999_ns << " ns\n";
+    std::cout << "  max:   " << stats.max_ns << " ns\n";
+    std::cout << "  avg:   " << static_cast<int64_t>(stats.mean_ns) << " ns\n";
     std::cout << std::setprecision(0);
-    std::cout << "  throughput: " << (1e9 / avg) << " orders/sec\n";
+    std::cout << "  throughput: " << throughput << " orders/sec\n";
 
     return 0;
 }

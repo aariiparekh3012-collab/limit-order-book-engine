@@ -4,6 +4,7 @@
 /CMakeFiles/
 cmake-build-*/
 out/
+/benchmark-*.csv
 
 # IDE
 .idea/

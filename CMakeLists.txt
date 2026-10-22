@@ -52,11 +52,16 @@ if(LOB_BUILD_TESTS)
     target_compile_definitions(test_cli PRIVATE LOB_DISABLE_MAIN)
     target_link_libraries(test_cli PRIVATE lob Catch2::Catch2WithMain)
 
+    add_executable(test_benchmark_csv tests/test_benchmark_csv.cpp)
+    target_include_directories(test_benchmark_csv PRIVATE bench)
+    target_link_libraries(test_benchmark_csv PRIVATE Catch2::Catch2WithMain)
+
     include(CTest)
     include(Catch)
     catch_discover_tests(test_matching)
     catch_discover_tests(test_snapshot)
     catch_discover_tests(test_cli)
+    catch_discover_tests(test_benchmark_csv)
 endif()
 
 # ──────────────────────────────────────────────
