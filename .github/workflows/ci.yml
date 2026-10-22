@@ -61,5 +61,14 @@ jobs:
       - name: Benchmark (Release only)
         if: matrix.build_type == 'Release'
         run: |
-          ./build/bench_submit
-          ./build/bench_mixed
+          ./build/bench_submit --csv > benchmark-submit.csv
+          ./build/bench_mixed --csv > benchmark-mixed.csv
+          cat benchmark-submit.csv
+          cat benchmark-mixed.csv
+
+      - name: Upload benchmark results (Release only)
+        if: matrix.build_type == 'Release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ matrix.compiler }}
+          path: benchmark-*.csv

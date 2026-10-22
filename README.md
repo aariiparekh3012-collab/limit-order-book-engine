@@ -91,6 +91,7 @@ ids. Pass `--depth N` to `lob_cli` to print it after every order.
 │       ├── main.yml
 │       └── pages.yml
 ├── bench/
+│   ├── benchmark_csv.hpp
 │   ├── bench_submit.cpp
 │   └── bench_mixed.cpp
 ├── examples/
@@ -169,13 +170,22 @@ The CLI can be used to submit a reproducible sequence of orders and inspect the 
 ./build/bench_mixed
 ```
 
+Pass `--csv` to either benchmark to emit a stable, machine-readable schema instead of the human-readable report. Redirect the output to keep results for build-to-build comparisons:
+
+```bash
+./build/bench_submit --csv > benchmark-submit.csv
+./build/bench_mixed --csv > benchmark-mixed.csv
+```
+
+Both files use the same tidy schema. The submission benchmark emits one latency row; the mixed benchmark emits one latency row for each operation type plus an `all` row containing aggregate wall-clock throughput. Empty fields are not applicable to that row. `schema_version` allows readers to reject incompatible future formats, and the fixed RNG seed and warmup count are included with every row. Release CI runs upload both CSV files as compiler-specific workflow artifacts.
+
 `bench_submit` is a single-threaded limit-order submission microbenchmark: 1M orders after a 10k-order warmup, prices clustered tightly around a mid so most orders rest rather than cross repeatedly. It reports submission latency percentiles and aggregate throughput.
 
 `bench_mixed` models a more realistic order flow instead of pure insertion: after the same 10k-order warmup, it runs 1M operations split 60% limit submits (50/50 buy/sell, price clustered around a mid), 25% cancels (of a randomly chosen currently-resting order), and 15% modifies (price nudged ±1-3 ticks with a fresh random quantity, exercising the loses-time-priority reprice path). Latency is reported separately per operation type — a cancel uses an average O(1) hash lookup and intrusive-list unlink while a submit may sort and walk price levels, so averaging them together would hide that difference — plus one aggregate ops/sec throughput number across all three types combined. Both the workload mix and the RNG seed are fixed, so a given build reproduces the same sequence of operations run to run.
 
 Benchmark results depend on the processor, compiler, optimisation flags, operating system, and current system load. Performance figures should therefore be published together with the complete test environment and methodology.
 
-See [ROADMAP.md](ROADMAP.md) for further planned improvements (result export, peak-memory tracking, raw machine-readable output).
+See [ROADMAP.md](ROADMAP.md) for further planned improvements such as peak-memory tracking and richer hardware profiling.
 
 ## Correctness
 
@@ -230,7 +240,6 @@ This project focuses on the in-memory matching-engine core. It is not a producti
 
 Planned improvements include:
 
-- Benchmark result export
 - Expanded snapshot-test integration
 - Improved replay tooling
 - Additional invariants and property-based tests
