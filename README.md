@@ -187,6 +187,179 @@ Benchmark results depend on the processor, compiler, optimisation flags, operati
 
 See [ROADMAP.md](ROADMAP.md) for further planned improvements such as peak-memory tracking and richer hardware profiling.
 
+## Benchmark measurements
+
+### Reproduce locally
+
+Use Bash on Linux or Ubuntu under WSL. Record WSL/VM results as such.
+Install Git, CMake 3.16 or later, Make, GCC 12 and Clang 15 before running.
+CMake downloads Catch2 v3.7.1 for the correctness tests.
+
+To reproduce the merged CSV-export revision in a fresh checkout:
+
+```bash
+git clone https://github.com/aariiparekh3012-collab/limit-order-book-engine.git
+cd limit-order-book-engine
+git checkout --detach fca08dd2b331dea88fc5c7890b0a9c8bd0f05952
+```
+
+For a different revision, use a clean checkout of that revision and record
+its full SHA. Run the following from the repository root. Use fresh
+`build-local-gcc` and `build-local-clang` directories if an existing CMake
+cache was configured with different compiler settings.
+
+```bash
+set -euo pipefail
+RESULTS_DIR="$(mktemp -d "$PWD/benchmark-local-XXXXXXXX")"
+
+{
+  date -u
+  git rev-parse HEAD
+  git status --short
+  uname -a
+  cat /etc/os-release
+  lscpu
+  free -h
+  cmake --version
+} > "$RESULTS_DIR/environment.txt"
+
+for compiler in gcc clang; do
+  if [ "$compiler" = gcc ]; then
+    cxx=g++-12
+  else
+    cxx=clang++-15
+  fi
+  build_dir="build-local-$compiler"
+  "$cxx" --version > "$RESULTS_DIR/compiler-$compiler.txt"
+
+  cmake -S . -B "$build_dir" \
+    -G "Unix Makefiles" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CXX_COMPILER="$cxx" \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DLOB_BUILD_TESTS=ON
+  cmake --build "$build_dir" --parallel
+
+  ctest --test-dir "$build_dir" --output-on-failure \
+    > "$RESULTS_DIR/tests-$compiler.txt" 2>&1
+  cat "$RESULTS_DIR/tests-$compiler.txt"
+
+  cp "$build_dir/CMakeCache.txt" "$RESULTS_DIR/CMakeCache-$compiler.txt"
+  cp "$build_dir/compile_commands.json" \
+    "$RESULTS_DIR/compile_commands-$compiler.json"
+
+  for run in 1 2 3 4 5; do
+    "./$build_dir/bench_submit" --csv \
+      > "$RESULTS_DIR/submit-$compiler-$run.csv"
+    "./$build_dir/bench_mixed" --csv \
+      > "$RESULTS_DIR/mixed-$compiler-$run.csv"
+  done
+done
+
+printf 'Results saved to: %s\n' "$RESULTS_DIR"
+```
+
+The commands build and test each compiler separately, then run both
+benchmarks five times sequentially. Five repetitions are the local
+reporting protocol; CI currently runs each benchmark once per Release job.
+If tests fail, inspect the saved test log before collecting measurements.
+
+Run while plugged in with low background activity. Record the actual power
+mode, CPU affinity, tuning and system load. Keep the raw CSVs and environment,
+compiler, build and test records together.
+
+### CSV fields and timing scopes
+
+| Fields | Meaning |
+|---|---|
+| `schema_version`, `benchmark`, `operation` | Schema version 1 and row identity |
+| `samples`, `warmup_operations`, `random_seed` | Actual sample count and workload parameters |
+| `p50_ns`, `p90_ns`, `p99_ns`, `p999_ns` | Per-operation latency percentiles in nanoseconds |
+| `max_ns`, `mean_ns` | Maximum and mean latency in nanoseconds |
+| `throughput_ops_per_second` | Throughput, with the row-specific timing scope below |
+| `wall_seconds` | Mixed measured-loop duration |
+| `final_resting_orders` | Final mixed-workload book size |
+
+Empty CSV fields mean not applicable, not zero.
+
+- `submit / submit`: 1,000,000 measured submissions after 10,000 warmup
+  submissions; seed 42. Throughput is `1e9 / mean_ns`; wall time is absent.
+- `mixed / submit`, `mixed / cancel`, `mixed / modify`: per-operation
+  latencies and actual counts. Selection weights are 60%/25%/15%; actual
+  counts need not match these percentages exactly. An empty live pool
+  forces a submission.
+- `mixed / all`: 1,000,000 measured operations after 10,000 warmup
+  operations; seed 1234. Throughput is `1,000,000 / wall_seconds`.
+  The measured loop includes workload generation, tracking and bookkeeping.
+  This row has no latency percentiles.
+
+Submission throughput and mixed throughput measure different timing scopes.
+The fixed seed reproduces a workload within a given build; record the C++
+standard library as well when comparing toolchains.
+
+### Local results — pending measurement
+
+No local performance measurements are published yet. Replace the bracketed
+entries only after running the commands on the machine described below.
+Duplicate the environment and result tables for each measured compiler.
+Retain raw data and add a working link before publishing figures.
+
+| Environment | Recorded value |
+|---|---|
+| Measurement date | [UTC date/time] |
+| Commit and working-tree state | [full SHA; clean or describe changes] |
+| CPU | [model; physical cores / logical CPUs] |
+| RAM | [capacity] |
+| OS and kernel | [distribution/version; kernel] |
+| Execution environment | [native Linux / WSL version / VM details] |
+| Compiler and C++ standard library | [names and full versions] |
+| Build | Release; C++17 |
+| Effective compile flags | [from compile_commands.json] |
+| CMake version | [version] |
+| Power mode, affinity, tuning and system load | [actual conditions] |
+| Correctness tests | [ctest result] |
+| Raw data | [link to CSV files and environment/build/test records] |
+
+Reporting convention: median of each metric across five runs; percentiles
+are medians of per-run percentiles, not pooled percentiles. The maximum
+column is the largest observed per-run maximum. Preserve all runs.
+
+| Benchmark / operation | Samples per run | p50 ns | p90 ns | p99 ns | p99.9 ns | Mean ns | Largest max ns |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Submission / submit | 1,000,000 | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
+| Mixed / submit | [actual count or range] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
+| Mixed / cancel | [actual count or range] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
+| Mixed / modify | [actual count or range] | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
+
+| Throughput metric | Median ops/s | Min–max ops/s |
+|---|---:|---:|
+| Submission: reciprocal of mean measured submission latency | [ ] | [ ] |
+| Mixed: full measured-loop wall-clock throughput | [ ] | [ ] |
+
+Mixed wall time: [median; min–max] seconds.
+Mixed final resting orders: [actual value or range].
+
+These single-threaded, in-memory microbenchmarks describe the recorded
+machine and methodology. They do not measure networked exchange throughput.
+
+### CI artifacts — separate from local measurements
+
+The [CI workflow](.github/workflows/ci.yml) builds GCC/Clang in Debug and
+Release on GitHub-hosted `ubuntu-latest` runners. The Release jobs use
+`g++-12` and `clang++-15`, run both benchmarks with `--csv`, and upload:
+
+- `benchmark-results-gcc`
+- `benchmark-results-clang`
+
+Each artifact contains `benchmark-submit.csv` and `benchmark-mixed.csv`.
+Both Release jobs passed and uploaded their artifacts in the
+[verified PR #4 run](https://github.com/aariiparekh3012-collab/limit-order-book-engine/actions/runs/39780685988)
+on 22 October 2026. Artifact downloads are subject to GitHub retention.
+
+These are CI-runner measurements, not measurements of the local machine.
+Passing CI confirms successful execution; the workflow does not enforce a
+performance threshold. CI figures are excluded from the local result tables.
+
 ## Correctness
 
 Performance is evaluated only alongside correctness. a growing Catch2 test suite across `test_matching` and `test_snapshot` cover matching behaviour such as:
