@@ -1,7 +1,5 @@
 # roadmap — the-book-was-open
 
-20 steps from "matching engine works" to "I got the offer." organized into four phases: harden the engine, build the SLP extension, get validated, and show up ready.
-
 timeline: aug 2026 → aug 2027.
 
 ---
